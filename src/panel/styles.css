@@ -1,0 +1,833 @@
+/*
+ * Side-panel styles.
+ *
+ * Two constraints drive every decision here:
+ *
+ * 1. **The panel is ~360-400px wide.** There is no room for a two-column layout,
+ *    a table with more than two columns, or anything that scrolls sideways.
+ *    Horizontal scrolling in a narrow panel is miserable, so long values clip
+ *    with a tooltip instead. Every layout below is a single column.
+ *
+ * 2. **It must read correctly in both themes.** Chrome gives the side panel the
+ *    user's theme, so colours are declared once as semantic variables and
+ *    overridden in one `prefers-color-scheme` block. Naming them by role rather
+ *    than appearance (`--surface`, not `--grey-100`) is what keeps the dark
+ *    override from becoming a second stylesheet.
+ *
+ * Plain CSS with variables, no framework: the whole UI is a few hundred lines and
+ * a utility framework would add a build step and a bundle for no benefit.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --surface: #f6f7f9;
+  --surface-raised: #ffffff;
+  --border: #e3e5e9;
+  --border-strong: #c9ccd3;
+  --text: #1c1e21;
+  --text-dim: #61656d;
+  --text-faint: #8b8f98;
+
+  --accent: #1f7a4d;
+  --accent-bg: #e6f4ec;
+  --accent-text: #14603a;
+
+  --danger: #b3261e;
+  --danger-bg: #fdeceb;
+
+  --warn: #8a5a00;
+  --warn-bg: #fdf3e0;
+
+  --info: #1d4ed8;
+  --info-bg: #eaefff;
+
+  /* Syntax roles for the JSON tree, named by what they mark, not by hue. */
+  --json-key: #7a3e9d;
+  --json-string: #1f7a4d;
+  --json-number: #b35c00;
+  --json-boolean: #1d4ed8;
+  --json-null: #8b8f98;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+  --gap: 8px;
+
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1c1e;
+    --surface: #232528;
+    --surface-raised: #2a2c30;
+    --border: #35383d;
+    --border-strong: #474b52;
+    --text: #e8eaed;
+    --text-dim: #a8adb5;
+    --text-faint: #7d838c;
+
+    --accent: #3dd68c;
+    --accent-bg: #143026;
+    --accent-text: #6ee0a6;
+
+    --danger: #f2837c;
+    --danger-bg: #3a1e1c;
+
+    --warn: #e0b054;
+    --warn-bg: #33270f;
+
+    --info: #7aa2ff;
+    --info-bg: #1b2540;
+
+    --json-key: #c99cf0;
+    --json-string: #7ddba4;
+    --json-number: #f0b47a;
+    --json-boolean: #8fb4ff;
+    --json-null: #7d838c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+  /* The panel owns its own scrolling regions; a body scrollbar would double up. */
+  overflow: hidden;
+}
+
+/* --- Shell ---------------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+
+.topbar-title {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.topbar-spacer {
+  flex: 1 1 auto;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-faint);
+}
+
+.status-dot.live {
+  background: var(--accent);
+  /* Only the live state animates: a paused panel that pulses reads as active. */
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Respect a user who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.live {
+    animation: none;
+  }
+}
+
+.tabbar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+
+.tabbar button {
+  flex: 1 1 0;
+  padding: 7px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  /* Tab labels must never wrap: four tabs in 360px is already tight. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabbar button:hover {
+  color: var(--text);
+}
+
+.tabbar button[aria-selected='true'] {
+  color: var(--accent-text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn.primary {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.btn.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: none;
+  color: var(--text-dim);
+  padding: 3px 5px;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn.tiny {
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}
+
+/* --- Stream list ---------------------------------------------------------- */
+
+.stream-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.stream-row:hover {
+  background: var(--surface);
+}
+
+.stream-row[aria-current='true'] {
+  background: var(--accent-bg);
+  border-left-color: var(--accent);
+}
+
+.stream-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.stream-method {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+/*
+ * The URL is the widest thing in the panel and the most likely to overflow.
+ * Clipped to one line with the full value in a tooltip; `direction: rtl` keeps
+ * the *end* of the path visible, since `/v1/chat/completions` identifies a stream
+ * and `https://api...` does not.
+ */
+.stream-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.stream-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* --- Badges --------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.badge.open {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+.badge.error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.badge.aborted,
+.badge.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: transparent;
+}
+
+.badge.info {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: transparent;
+}
+
+/* --- Notices -------------------------------------------------------------- */
+
+.notice {
+  margin: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.notice-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.notice.warn {
+  background: var(--warn-bg);
+  border-color: transparent;
+  color: var(--warn);
+}
+
+.notice.warn .notice-title {
+  color: var(--warn);
+}
+
+.notice.info {
+  background: var(--info-bg);
+  border-color: transparent;
+  color: var(--info);
+}
+
+.notice.info .notice-title {
+  color: var(--info);
+}
+
+.empty {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.empty-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+/* --- Detail view ---------------------------------------------------------- */
+
+.detail-head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+
+.detail-url {
+  font-family: var(--mono);
+  font-size: 11px;
+  /* Wrapping anywhere is correct for a URL, which has no useful break points. */
+  overflow-wrap: anywhere;
+  color: var(--text);
+  margin-top: 3px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.stat-label {
+  color: var(--text-faint);
+}
+
+.stat-value {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+/* --- Events --------------------------------------------------------------- */
+
+/*
+ * Sticky bulk-expand toolbar.
+ *
+ * Sticky rather than fixed so it scrolls within the events list only, and opaque
+ * because event rows scrolling underneath a translucent bar is unreadable at this
+ * width. `top: 0` works because the tab panel is the scroll container.
+ */
+.event-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.event {
+  border-bottom: 1px solid var(--border);
+}
+
+.event-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.event-head:hover {
+  background: var(--surface);
+}
+
+.event-seq {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  min-width: 28px;
+  flex: 0 0 auto;
+}
+
+.event-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+.event-offset {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+
+.event-body {
+  padding: 0 10px 8px 10px;
+}
+
+.event-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+/*
+ * Payload text. `pre-wrap` rather than `pre`: a 4KB JSON line must wrap instead
+ * of forcing the whole panel to scroll sideways, and `anywhere` allows a break
+ * inside a long token such as a base64 blob.
+ */
+.payload {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.payload.plain {
+  white-space: pre-wrap;
+}
+
+.window-toggle {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--info);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.window-toggle:hover {
+  background: var(--info-bg);
+}
+
+/* --- JSON tree ------------------------------------------------------------ */
+
+.json-tree {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.json-node {
+  /* Indentation via padding on the child, so a deep node still wraps within
+     the panel rather than pushing content out of view. */
+  padding-left: 12px;
+}
+
+.json-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.json-toggle {
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0;
+  width: 12px;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.json-key {
+  color: var(--json-key);
+  flex: 0 0 auto;
+}
+
+.json-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.json-string {
+  color: var(--json-string);
+}
+
+.json-number {
+  color: var(--json-number);
+}
+
+.json-boolean {
+  color: var(--json-boolean);
+}
+
+.json-null {
+  color: var(--json-null);
+  font-style: italic;
+}
+
+.json-punct {
+  color: var(--text-faint);
+}
+
+.json-count {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* --- Settings ------------------------------------------------------------- */
+
+.settings {
+  padding: 10px;
+}
+
+.settings-group {
+  margin-bottom: 18px;
+}
+
+.settings-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+.field input[type='text'],
+.field input[type='number'],
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.field textarea {
+  font-family: var(--mono);
+  font-size: 11px;
+  min-height: 60px;
+  resize: vertical;
+}
+
+.field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.field-row input[type='checkbox'] {
+  margin: 2px 0 0 0;
+  flex: 0 0 auto;
+}
+
+.field-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 5px;
+  cursor: pointer;
+}
+
+.radio-option:hover {
+  border-color: var(--border-strong);
+}
+
+.radio-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.masked-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+/* --- Utilities ------------------------------------------------------------ */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.dim {
+  color: var(--text-dim);
+}
+
+.faint {
+  color: var(--text-faint);
+}
+
+.small {
+  font-size: 11px;
+}
+
+.clip {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.header-table {
+  display: grid;
+  /* Name column capped so a long value cannot squeeze it to nothing, and the
+     value column takes the rest with its own overflow handling. */
+  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
+  gap: 2px 8px;
+  font-size: 11px;
+}
+
+.header-name {
+  font-family: var(--mono);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.header-value {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}

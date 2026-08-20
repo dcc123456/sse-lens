@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      No viewport meta: the side panel is not a responsive document, and Chrome
+      sizes it. No CSP meta either — MV3 applies the extension_pages policy to
+      this page already, and a second, weaker one here would only confuse.
+    -->
+    <title>SSE Lens</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

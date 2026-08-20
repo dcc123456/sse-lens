@@ -1,0 +1,34 @@
+{
+  "name": "sse-lens",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Capture the current tab's Server-Sent Events / streaming responses and read them in a side panel: framed events, JSON trees, merged LLM deltas, and raw text.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p demo/tsconfig.json",
+    "test": "vitest run",
+    "icons": "node scripts/generate-icons.mjs",
+    "demo": "node demo/server.mjs",
+    "verify": "node demo/verify.mjs",
+    "e2e": "node demo/browser-check.mts"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@types/chrome": "^0.0.312",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^26.0.0",
+    "playwright": "^1.62.1",
+    "typescript": "^5.9.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.0"
+  }
+}

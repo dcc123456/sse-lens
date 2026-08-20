@@ -1,0 +1,28 @@
+{
+  /*
+   * Node-side tooling only.
+   *
+   * `demo/` runs under Node and needs `process`, `node:fs` and friends. The main
+   * tsconfig deliberately withholds those: the extension runs in a browser and a
+   * stray `process.env` there would typecheck and then fail at runtime. Keeping
+   * the Node globals in a separate project preserves that guarantee while still
+   * typechecking this script.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node", "chrome"]
+  },
+  "include": ["browser-check.mts"]
+}

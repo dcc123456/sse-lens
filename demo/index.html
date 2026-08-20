@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SSE Lens — capture test page</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fff;
+        --fg: #1c1e21;
+        --dim: #61656d;
+        --line: #e3e5e9;
+        --accent: #1f7a4d;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1b1c1e;
+          --fg: #e8eaed;
+          --dim: #a8adb5;
+          --line: #35383d;
+          --accent: #3dd68c;
+        }
+      }
+      body {
+        margin: 0 auto;
+        padding: 28px 20px 60px;
+        max-width: 760px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      p.lede {
+        color: var(--dim);
+        margin: 0 0 24px;
+      }
+      section {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-bottom: 14px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 0 0 4px;
+      }
+      .why {
+        color: var(--dim);
+        font-size: 13px;
+        margin: 0 0 10px;
+      }
+      button {
+        font: inherit;
+        font-size: 13px;
+        padding: 5px 11px;
+        border: 1px solid var(--accent);
+        border-radius: 5px;
+        background: transparent;
+        color: var(--accent);
+        cursor: pointer;
+        margin-right: 6px;
+      }
+      button:hover {
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+      }
+      pre {
+        margin: 10px 0 0;
+        padding: 8px 10px;
+        background: color-mix(in srgb, var(--fg) 6%, transparent);
+        border-radius: 5px;
+        font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+      code {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 0.92em;
+      }
+      .note {
+        font-size: 13px;
+        color: var(--dim);
+        border-left: 3px solid var(--accent);
+        padding-left: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SSE Lens — capture test page</h1>
+    <p class="lede">
+      Each button exercises a different capture path. Open the side panel first, then reload this
+      page so the hook attaches before the page script runs.
+    </p>
+
+    <p class="note">
+      This page needs a local server that streams; see <code>demo/server.mjs</code>. Serving this
+      file over <code>file://</code> will not work — Chrome forbids content scripts there, which the
+      panel will tell you.
+    </p>
+
+    <section>
+      <h2>1 · fetch + text/event-stream</h2>
+      <p class="why">
+        The ordinary case. Raw bytes are captured, so framing, comments and heartbeats all survive
+        exactly as the server sent them.
+      </p>
+      <button data-demo="fetch-sse">Run</button>
+      <pre data-out="fetch-sse"></pre>
+    </section>
+
+    <section>
+      <h2>2 · fetch + OpenAI-style deltas</h2>
+      <p class="why">
+        Token-by-token <code>choices[].delta.content</code>. The Merged tab should reassemble the
+        whole sentence and name the field it came from.
+      </p>
+      <button data-demo="fetch-deltas">Run</button>
+      <pre data-out="fetch-deltas"></pre>
+    </section>
+
+    <section>
+      <h2>3 · fetch mislabelled as text/plain</h2>
+      <p class="why">
+        A proxy serving genuine SSE under the wrong content type. Captured only in
+        <strong>loose</strong> mode, by sniffing the payload — strict mode should ignore it.
+      </p>
+      <button data-demo="fetch-plain">Run</button>
+      <pre data-out="fetch-plain"></pre>
+    </section>
+
+    <section>
+      <h2>4 · EventSource</h2>
+      <p class="why">
+        The browser parses this one itself, so events are reconstructed and comments are
+        structurally unavailable. The panel should say so rather than implying none were sent.
+      </p>
+      <button data-demo="eventsource">Run</button>
+      <button data-demo="eventsource-stop">Stop</button>
+      <pre data-out="eventsource"></pre>
+    </section>
+
+    <section>
+      <h2>5 · XMLHttpRequest</h2>
+      <p class="why">
+        Captured from the growing <code>responseText</code>. Only the newly arrived slice is
+        forwarded on each progress event, so frames must not appear duplicated.
+      </p>
+      <button data-demo="xhr">Run</button>
+      <pre data-out="xhr"></pre>
+    </section>
+
+    <section>
+      <h2>6 · NDJSON</h2>
+      <p class="why">One JSON object per line, no <code>data:</code> prefix.</p>
+      <button data-demo="ndjson">Run</button>
+      <pre data-out="ndjson"></pre>
+    </section>
+
+    <section>
+      <h2>7 · Aborted mid-stream</h2>
+      <p class="why">
+        Aborts after ~1s. Should be recorded as <em>aborted</em>, not as an error, and the frames
+        received before the abort must be kept.
+      </p>
+      <button data-demo="abort">Run</button>
+      <pre data-out="abort"></pre>
+    </section>
+
+    <section>
+      <h2>8 · Truncated final frame</h2>
+      <p class="why">
+        Ends mid-event on purpose. The unterminated remainder should surface as a tail warning
+        rather than being silently dropped.
+      </p>
+      <button data-demo="truncated">Run</button>
+      <pre data-out="truncated"></pre>
+    </section>
+
+    <section>
+      <h2>9 · Ordinary JSON (control)</h2>
+      <p class="why">
+        Not a stream. Must <strong>not</strong> appear in the panel — this is the check that the
+        hook is not capturing indiscriminately.
+      </p>
+      <button data-demo="plain-json">Run</button>
+      <pre data-out="plain-json"></pre>
+    </section>
+
+    <section>
+      <h2>10 · Response fidelity (control)</h2>
+      <p class="why">
+        Asserts that the page still sees the correct <code>status</code>, <code>url</code> and full
+        body after the hook rebuilt the response. Any failure here is a bug in the extension.
+      </p>
+      <button data-demo="fidelity">Run</button>
+      <pre data-out="fidelity"></pre>
+    </section>
+
+    <script type="module">
+      const out = (name, text) => {
+        const box = document.querySelector(`[data-out="${name}"]`)
+        if (box) box.textContent = text
+      }
+      const append = (name, text) => {
+        const box = document.querySelector(`[data-out="${name}"]`)
+        if (box) box.textContent += text
+      }
+
+      /** Reads a streaming response, reporting progress into the page. */
+      async function drain(name, response) {
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let total = 0
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.length
+          append(name, decoder.decode(value, { stream: true }))
+        }
+        append(name, `\n--- done, ${total} bytes ---`)
+      }
+
+      const demos = {
+        async 'fetch-sse'() {
+          out('fetch-sse', '')
+          await drain('fetch-sse', await fetch('/sse'))
+        },
+
+        async 'fetch-deltas'() {
+          out('fetch-deltas', '')
+          const response = await fetch('/deltas', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              // Present to verify masking: this must appear redacted in the panel.
+              authorization: 'Bearer sk-demo-0123456789abcdefghij',
+            },
+            body: JSON.stringify({ model: 'demo-1', stream: true, api_key: 'sk-should-be-masked' }),
+          })
+          await drain('fetch-deltas', response)
+        },
+
+        async 'fetch-plain'() {
+          out('fetch-plain', '')
+          await drain('fetch-plain', await fetch('/sse?as=text/plain'))
+        },
+
+        eventsource() {
+          out('eventsource', '')
+          demos._source?.close()
+          const source = new EventSource('/events')
+          demos._source = source
+          source.addEventListener('message', (event) => append('eventsource', `${event.data}\n`))
+          // A custom type, to check that the hook mirrors page subscriptions.
+          source.addEventListener('tick', (event) => append('eventsource', `tick: ${event.data}\n`))
+          source.addEventListener('error', () => append('eventsource', '[error]\n'))
+        },
+
+        'eventsource-stop'() {
+          demos._source?.close()
+          append('eventsource', '\n--- closed by page ---')
+        },
+
+        xhr() {
+          out('xhr', '')
+          const xhr = new XMLHttpRequest()
+          xhr.open('GET', '/sse')
+          xhr.setRequestHeader('x-demo-header', 'visible')
+          xhr.addEventListener('progress', () => out('xhr', xhr.responseText))
+          xhr.addEventListener('load', () => append('xhr', '\n--- done ---'))
+          xhr.send()
+        },
+
+        async ndjson() {
+          out('ndjson', '')
+          await drain('ndjson', await fetch('/ndjson'))
+        },
+
+        async abort() {
+          out('abort', '')
+          const controller = new AbortController()
+          setTimeout(() => controller.abort(), 1000)
+          try {
+            await drain('abort', await fetch('/sse?slow=1', { signal: controller.signal }))
+          } catch (error) {
+            append('abort', `\n--- ${error.name}: expected ---`)
+          }
+        },
+
+        async truncated() {
+          out('truncated', '')
+          await drain('truncated', await fetch('/truncated'))
+        },
+
+        async 'plain-json'() {
+          const response = await fetch('/json')
+          out('plain-json', JSON.stringify(await response.json()))
+        },
+
+        async fidelity() {
+          const response = await fetch('/sse')
+          const checks = []
+          checks.push(`status: ${response.status} ${response.status === 200 ? 'OK' : 'FAIL'}`)
+          checks.push(
+            `url preserved: ${response.url.endsWith('/sse') ? 'OK' : `FAIL (${response.url})`}`,
+          )
+          checks.push(`content-type: ${response.headers.get('content-type')}`)
+          const text = await response.text()
+          checks.push(`body readable: ${text.includes('data:') ? 'OK' : 'FAIL'}`)
+          checks.push(`body bytes: ${text.length}`)
+          checks.push(`fetch.name: ${fetch.name === 'fetch' ? 'OK' : 'FAIL'}`)
+          out('fidelity', checks.join('\n'))
+        },
+      }
+
+      for (const button of document.querySelectorAll('[data-demo]')) {
+        button.addEventListener('click', () => {
+          const name = button.dataset.demo
+          Promise.resolve(demos[name]?.()).catch((error) => out(name, `Error: ${error.message}`))
+        })
+      }
+    </script>
+  </body>
+</html>
