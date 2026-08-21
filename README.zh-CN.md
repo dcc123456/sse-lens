@@ -43,7 +43,7 @@
 ---
 
 ## 安装
-
+### 源码安装
 需要 **Chrome 116+**（侧边栏 API）和 [pnpm](https://pnpm.io/)。
 
 ```bash
@@ -61,6 +61,17 @@ pnpm build
 4. 选择 **`dist/`** 目录——不是项目根目录
 
 > 每次执行 `pnpm build` 之后，都要点一下 SSE Lens 卡片上的 **↻ 刷新**图标。否则 Service Worker 的改动不会生效。
+
+### release 包安装
+
+在release中下载最新安装包到本地，然后解压
+
+然后在 Chrome 中：
+
+1. 打开 `chrome://extensions`
+2. 打开右上角的**开发者模式**
+3. 点击**加载已解压的扩展程序**
+4. 选择 **`dist/`** 目录——不是项目根目录
 
 ---
 
