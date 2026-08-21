@@ -25,7 +25,8 @@
 
 ---
 
-![Uploading 20260821130957_rec_.gif…]()
+<img width="1828" height="1134" alt="20260821130957_rec_" src="https://github.com/user-attachments/assets/7ae3f0c0-f3bd-44d5-afb9-b4affd6c338c" />
+
 
 
 ## 功能
