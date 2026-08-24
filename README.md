@@ -30,7 +30,7 @@ Common users: anyone integrating OpenAI / Anthropic / Gemini / Ollama or an in-h
 | Capability | Notes |
 | --- | --- |
 | Event timeline | Every frame with its `event`, `id`, `retry`, comments, and offset from stream start |
-| Expand / collapse all | One click opens or closes every loaded frame *and* its JSON tree |
+| Expand / collapse all | One button, labelled by state: **▾ Expand all** until everything is open, then **▴ Collapse all** |
 | JSON tree | Collapsible, per frame, with the common shapes pre-expanded |
 | Merged deltas | Reassembles incremental text and **names the field it came from**, so the guess is checkable |
 | Raw text | The exact bytes, for when framing itself is the bug |
@@ -95,6 +95,7 @@ Use **Export** for a bug report. The **⚙** tab holds language, capture on/off,
 | --- | --- |
 | Panel says the page cannot be inspected | You are on `chrome://`, the Web Store, or another extension's page. Chrome forbids extensions there; switch to an ordinary `http(s)` page. |
 | Nothing appears when the stream runs | Reload the page with the panel already open (step 2). |
+| A tab open before the extension loaded | The panel detects the missing hook and shows **Not listening on this page yet**; click **Start listening** (or the **⊕** in the top bar). It injects the hook per-frame without reloading. See [Attaching to a page after load](#attaching-to-a-page-after-load). |
 | Still nothing after a rebuild | Click **↻** on the SSE Lens card in `chrome://extensions`. |
 | `EventSource` shows no comments or heartbeats | Expected, and labelled in the UI — the browser consumed those bytes before the hook could see them. See [Fidelity](#fidelity-differs-by-transport). |
 | Long stream appears truncated | Windowing and quotas. Dropped frames are always **counted and reported**, never silently omitted. |
@@ -173,6 +174,28 @@ For streams a page opens during its own bootstrap there is a second problem: the
 - Requests that are not captured return the **original object**, not a copy, so identity comparisons and non-standard properties survive.
 - Every wrapper is guarded and falls back to native behaviour. A bug here degrades to "no capture", never to "the page broke".
 
+### Attaching to a page after load
+
+A common request is "the page is already loaded — give me a button to start listening". It turns out to cover **two very different situations**, and only one is fixable by injection, so the panel distinguishes them rather than promising the same fix for both.
+
+| Situation | What is actually happening | Recoverable? |
+| --- | --- | --- |
+| The tab was open before the extension was installed/reloaded | Chrome never injected the content script into that tab at all | **Yes** — `chrome.scripting.executeScript` places it on demand |
+| The hook is present and the page calls `window.fetch` | Already captured; no action needed | N/A |
+| The hook is present, but the page saved `const f = window.fetch` before `document_start` | The page holds the *original* function; patching `window.fetch` later cannot reach it | **No** — only a reload helps |
+
+The first case is what the **Start listening** button fixes. It is why the `scripting` permission exists — it is used *only* for this recovery, never during normal operation. The injected files are read from the running manifest's own `content_scripts`, so a bundle hash change cannot silently break them.
+
+The boundary is not theoretical; it was established in a real browser. A page aliasing `fetch` via an init script before the hook runs genuinely misses its stream, while a `window.fetch` call from the same page in the same session is captured. Reporting those two as identical success would make the button look like it works on most pages and fail silently on exactly the bundled applications that are hardest to debug. So the panel says so: attach applies to **later requests only**, a request already in flight is gone, and the "already listening" result points at the early-alias case and suggests a reload.
+
+Detecting the missing-hook case has its own traps, and both were real bugs caught by `pnpm e2e:attach`:
+
+1. **The probe must not be an instruction.** The worker probes each tab with `tabs.sendMessage` to tell "no content script" (reject) from "idle page" (resolve). The first probe reused `armMessage(false)`, and because that probe ran on every state refresh, it silently disarmed the tab under inspection — capture appeared to work and then stopped. A fake relay has no arm state to lose, so no unit test could see it. The probe is now an inert `{type:'probe'}` that the relay answers without acting on.
+
+2. **The arm must wait for a freshly injected relay.** `executeScript` resolves when the relay *loader* is queued, before its dynamically imported chunk has registered the `onMessage` listener. Sending the arm instruction immediately meant it could land before the listener existed and be silently dropped — the attach reported success while later requests were still missed. The attach now polls the probe in each frame it injected and only arms once the relay answers, with a 1.5s cap.
+
+3. **Injection is per-frame, not `allFrames: true`.** That call is atomic across frames, so a single inaccessible subframe (a cross-origin frame without host access, an odd scheme) makes it reject and leaves the top frame un-injected. Since SSE originates in the top frame in essentially every case, each frame is injected on its own; the top frame is required, subframes are best-effort and skipped when their URL is non-`http(s)`. This was confirmed against a page carrying cross-origin, `about:blank` and `data:` iframes at once.
+
 ### Following the current tab
 
 The panel always shows whichever tab you are looking at. Switching tabs, switching windows, or closing the armed tab all re-point it automatically — there is no "select this page" button, because a panel scoped to "the current page" should not need to be told what the current page is.
@@ -196,20 +219,31 @@ This caused a real, user-visible bug: capture worked on a page that was already 
 
 Relatedly, `CaptureStore` **counts** messages it cannot match to a stream (`orphanCount`). This bug stayed hidden for as long as it did because those drops were silent, and a debugging tool that quietly discards data is worse than one that admits it.
 
-### One-shot bulk expand
+### The bulk expand toggle
 
-"Expand all" and "collapse all" sit in a sticky toolbar above the frames, and drive both the event rows and the JSON tree inside each one — expanding a row that still hides its payload would be a half-measure.
+One button in a sticky toolbar above the frames. It reads **▾ Expand all** until every loaded frame is open, then **▴ Collapse all** — and it drives the JSON tree inside each row too, since expanding a row that still hides its payload would be a half-measure.
 
-The instruction carries a **nonce** rather than being a boolean, because a boolean cannot express either half of what the buttons need to do:
+Two separate mechanisms sit behind it, because a flat list and a nested tree need different things. Both live in `src/panel/bulk.ts` so they cannot drift apart.
+
+**The event list lifts row state into the parent.** A button whose label reflects reality has to be able to ask "is everything open?", and it cannot ask rows that each hold their own answer privately. But the obvious lifted form — a `Set` of open row ids — is wrong for a live stream:
+
+| Representation | What breaks |
+| --- | --- |
+| `Set` of open ids | A frame arriving after "expand all" is not in the set, so it renders collapsed while the button still says "collapse all" — the label contradicts the screen |
+| Baseline mode + exceptions | A new row has no exception recorded, so it inherits the baseline and matches what the user chose |
+
+So the state is a mode (`collapsed`/`expanded`) plus the rows that *deviate* from it. The meaning of an entry inverts with the mode, which is exactly what makes "everything is open, including rows that do not exist yet" representable.
+
+**The JSON tree keeps local state and consumes one-shot instructions.** Lifting every node in an arbitrarily deep tree would mean rebuilding paths on each toggle. Instead each instruction carries a **nonce**, because a boolean cannot express either half of what is needed:
 
 | Design | How it fails |
 | --- | --- |
-| Latching `forceOpen` boolean | Overrides every later click, so collapsing one branch by hand snaps straight back open |
-| Plain boolean, react to changes | Pressing "expand all" a second time produces an identical value, nothing changes, and the button looks broken |
+| Latching boolean override | Overrides every later click, so collapsing one branch by hand snaps straight back open |
+| Plain boolean, react to changes | Pressing the button a second time produces an identical value, nothing changes, and the button looks dead |
 
-A nonce makes each press a distinct event that every node consumes exactly once, then hands control back to local state. Rows mounted later adopt the current instruction, so frames arriving mid-stream match what the user chose. The rule lives in one exported function, `resolveBulk`, so the tree and the rows cannot drift apart.
+A nonce makes each press a distinct event that every node consumes exactly once, then hands control back to local state.
 
-Bulk actions only reach the frames currently mounted — a long stream is windowed — so the toolbar states the count (`80/2431`) instead of implying it touched everything.
+Bulk actions only reach the frames currently mounted — a long stream is windowed — so the toolbar states the count (`80/2431`) rather than implying it touched everything, and the label is judged against the visible window only.
 
 ### Fidelity differs by transport
 
@@ -238,9 +272,10 @@ The panel always shows which path it used, so the guess is checkable rather than
 ```bash
 pnpm dev         # watch build
 pnpm typecheck   # tsc --noEmit, for both the extension and demo/
-pnpm test        # 348 unit and integration tests
+pnpm test        # unit and integration tests
 pnpm build       # production dist/
 pnpm e2e         # real browser, real extension (needs pnpm build first)
+pnpm e2e:attach  # real-browser check for the post-load attach path
 pnpm icons       # regenerate PNGs (pure Node, no image deps)
 ```
 
@@ -263,7 +298,9 @@ src/
     export.ts              JSON / NDJSON / curl
     i18n.ts                type-closed bilingual dictionary
     messages.ts            the wire protocol between all four contexts
-  panel/                   React side panel
+  panel/
+    bulk.ts                expand/collapse state for the list and the tree
+    ...                    React side panel
 demo/
   server.mjs               no-dependency streaming server
   verify.mjs               protocol-level checks against it

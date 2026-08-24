@@ -41,6 +41,7 @@ import {
   PANEL_PORT_NAME,
   RECONNECT_DELAY_MS,
   type PanelState,
+  type AttachResult,
   type WorkerEvent,
 } from '../lib/messages'
 import { DEFAULT_SETTINGS, type Settings, type SseEvent, type StreamRecord } from '../lib/types'
@@ -58,6 +59,18 @@ export interface PanelController {
   clearAll(): void
   clearStream(streamId: string): void
   updateSettings(patch: Partial<Settings>): void
+  /** Injects the hook into a tab that has none. */
+  attach(): void
+  /** In flight, so the button can show progress and refuse a second click. */
+  attaching: boolean
+  /**
+   * The last attach outcome, or null before one is attempted.
+   *
+   * Kept in the panel rather than the worker because it describes an *action the
+   * user just took*, not the state of the tab: it must not reappear after a
+   * reconnect, and it must survive the state snapshot that follows the attach.
+   */
+  attachResult: AttachResult | null
 }
 
 const EMPTY_STATE: PanelState = {
@@ -285,11 +298,35 @@ export function usePanelState(): PanelController {
     })
   }, [])
 
+  const [attaching, setAttaching] = useState(false)
+  const [attachResult, setAttachResult] = useState<AttachResult | null>(null)
+
+  const attach = useCallback(() => {
+    setAttaching(true)
+    // The previous outcome is cleared immediately: leaving a stale "already
+    // listening" on screen during a retry would misreport the attempt in flight.
+    setAttachResult(null)
+    void sendToWorker({ type: 'panel.attach' })
+      .then((response) => {
+        if (response?.ok) {
+          setState(response.state)
+          setAttachResult(response.attach ?? { ok: true, attached: false })
+        } else {
+          setAttachResult({ ok: false, attached: false, reason: 'injectionFailed' })
+        }
+      })
+      .catch(() => {
+        // The worker could not be reached. Reported as a failure rather than
+        // left spinning, so the button does not appear stuck.
+        setAttachResult({ ok: false, attached: false, reason: 'injectionFailed' })
+      })
+      .finally(() => setAttaching(false))
+  }, [])
+
   const selected = useMemo(
     () => state.streams.find((stream) => stream.id === selectedId),
     [state.streams, selectedId],
   )
-
   // A selected stream that was evicted by a quota would otherwise leave the
   // detail view showing nothing with no way back.
   useEffect(() => {
@@ -307,5 +344,8 @@ export function usePanelState(): PanelController {
     clearAll,
     clearStream,
     updateSettings,
+    attach,
+    attaching,
+    attachResult,
   }
 }

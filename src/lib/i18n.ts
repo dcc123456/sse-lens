@@ -56,6 +56,19 @@ export interface Messages {
   unavailableDisabledHint: string
   reloadHint: string
 
+  // Attaching to a tab that has no hook
+  unavailableNoHook: string
+  unavailableNoHookHint: string
+  attachNow: string
+  attaching: string
+  attachOk: string
+  attachOkHint: string
+  attachAlready: string
+  attachAlreadyHint: string
+  attachFailed: string
+  attachFailedRestricted: string
+  attachLimits: string
+
   // Stream states
   stateOpen: string
   stateClosed: string
@@ -190,6 +203,22 @@ const en: Messages = {
   unavailableDisabledHint: 'Turn capture back on to record streams.',
   reloadHint: 'Reload the page',
 
+  unavailableNoHook: 'Not listening on this page yet',
+  unavailableNoHookHint:
+    'This tab was open before SSE Lens loaded, so Chrome never placed the hook in it. Start listening, or reload the page.',
+  attachNow: 'Start listening',
+  attaching: 'Starting…',
+  attachOk: 'Listening on this page',
+  attachOkHint: 'Trigger the stream again — requests from now on are captured.',
+  attachAlready: 'Already listening',
+  attachAlreadyHint:
+    'The hook was already in place, so a missed stream was not caused by this. If the next request is still missed, the page kept its own reference to fetch before the hook ran — only a reload fixes that.',
+  attachFailed: 'Could not start listening',
+  attachFailedRestricted:
+    'Chrome forbids extensions on this page. Open a normal http(s) page instead.',
+  attachLimits:
+    'Applies to later requests only: a stream already running cannot be recovered, and neither can one made through a reference the page captured before the hook ran. Reloading is always reliable.',
+
   stateOpen: 'open',
   stateClosed: 'closed',
   stateError: 'error',
@@ -319,6 +348,21 @@ const zhCN: Messages = {
   unavailableDisabled: '抓取已关闭',
   unavailableDisabledHint: '重新开启抓取即可记录流。',
   reloadHint: '刷新页面',
+
+  unavailableNoHook: '尚未监听此页面',
+  unavailableNoHookHint:
+    '此标签页在 SSE Lens 加载之前就已打开，Chrome 不会向它补装钩子。可以开始监听，或刷新页面。',
+  attachNow: '开始监听',
+  attaching: '正在开始…',
+  attachOk: '已开始监听此页面',
+  attachOkHint: '请再次触发该请求——从现在起的请求都会被抓取。',
+  attachAlready: '已在监听',
+  attachAlreadyHint:
+    '钩子本来就已装好，所以漏抓不是这个原因。如果下一个请求仍然抓不到，说明页面在钩子安装前就保存了自己的 fetch 引用——这种情况只能靠刷新解决。',
+  attachFailed: '无法开始监听',
+  attachFailedRestricted: 'Chrome 禁止扩展在此页面运行。请切换到普通的 http(s) 页面。',
+  attachLimits:
+    '仅对之后的请求生效：已在进行中的流无法找回，页面在钩子安装前保存的引用所发起的请求也无法抓取。刷新页面始终可靠。',
 
   stateOpen: '进行中',
   stateClosed: '已结束',

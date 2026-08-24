@@ -220,6 +220,45 @@ describe('worker lifecycle: following the active tab', () => {
 
     expect(harness.isArmed(3)).toBe(true)
   })
+
+  it('does not disarm a tab while answering panel.getState', async () => {
+    // Regression for a probe that was an instruction. buildPanelState probes the
+    // relay to distinguish "no hook present" from "nothing streamed yet", and the
+    // first implementation reused armMessage(false) to avoid adding a message
+    // type. That ran on every getState — which the panel does constantly — so it
+    // silently disarmed the exact tab being inspected. Capture appeared to work
+    // and then stopped; only a real-browser test caught it. The probe must be
+    // inert, and the last arm instruction to the tab must remain armed=true.
+    await bootWorker(harness)
+    await harness.connectPanel()
+    expect(harness.isArmed(1)).toBe(true)
+
+    for (let i = 0; i < 3; i += 1) {
+      const reply = (await harness.sendToWorker({ type: 'panel.getState' })) as
+        | { ok: true; state: { unavailableReason?: string } }
+        | undefined
+      expect(reply?.ok).toBe(true)
+      // A listening tab must never be reported as noHook, and the probe must not
+      // leave a disarm behind it.
+      expect(reply && reply.ok && reply.state.unavailableReason).toBeUndefined()
+      expect(harness.isArmed(1), `tab disarmed after getState #${i + 1}`).toBe(true)
+    }
+  })
+
+  it('reports noHook for a tab whose relay does not answer', async () => {
+    // The whole reason the probe exists: a tab open before the extension loaded
+    // has no content script, and that state was previously indistinguishable
+    // from an idle page.
+    harness.deafTabs.add(1)
+    await bootWorker(harness)
+    await harness.connectPanel()
+
+    const reply = (await harness.sendToWorker({ type: 'panel.getState' })) as
+      | { ok: true; state: { unavailableReason?: string } }
+      | undefined
+    expect(reply?.ok).toBe(true)
+    expect(reply && reply.ok && reply.state.unavailableReason).toBe('noHook')
+  })
 })
 
 describe('worker lifecycle: surviving eviction', () => {

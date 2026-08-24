@@ -112,6 +112,23 @@ export type RelayMessage = {
   redactHeaders: string[]
 }
 
+/**
+ * A no-op sent to a tab purely to learn whether a relay is there.
+ *
+ * Needed because "this tab has no content script" and "this page has not streamed
+ * yet" are otherwise indistinguishable, and only the first one is recoverable.
+ * `tabs.sendMessage` rejects with "Receiving end does not exist" when no content
+ * script is present and resolves when one is, which is the signal.
+ *
+ * It carries no fields and the relay ignores it deliberately. An earlier version
+ * probed with `armMessage(false)`, reusing an existing message rather than adding
+ * one — which **disarmed the tab on every state refresh**, so capture silently
+ * stopped working. A probe must not be an instruction.
+ */
+export interface RelayProbe {
+  type: 'probe'
+}
+
 // --- relay → service worker -------------------------------------------------
 
 /** What the relay forwards, with the page's claims still unverified. */
@@ -152,6 +169,14 @@ export type PanelRequest =
   | { type: 'panel.setSettings'; patch: Partial<Settings> }
   /** Opening the panel is what arms a tab, so the panel announces itself. */
   | { type: 'panel.opened' }
+  /**
+   * Inject the content scripts into the current tab.
+   *
+   * For tabs that predate the extension: Chrome never injects into those
+   * retroactively, so without this the tab can never be captured at all. Takes
+   * effect for later requests only — see `background/attach.ts`.
+   */
+  | { type: 'panel.attach' }
 
 /** Everything the panel renders, in one snapshot. */
 export interface PanelState {
@@ -166,8 +191,25 @@ export interface PanelState {
    * Distinct from an empty stream list: "nothing streamed yet" and "this page
    * can never be captured" look identical otherwise, and the second one needs an
    * explanation plus a reload button.
+   *
+   * `noHook` means the tab has no content script — it was open before the
+   * extension loaded. That one is recoverable, so the panel offers an attach
+   * action for it rather than only suggesting a reload.
    */
   unavailableReason?: 'restricted' | 'noHook' | 'disabled'
+}
+
+/**
+ * The result of an attach attempt, pushed to the panel so it can explain itself.
+ *
+ * `attached` distinguishes a fresh injection from a hook that was already there;
+ * reporting them identically would tell a user whose real problem is an early
+ * `fetch` alias that everything is now fine.
+ */
+export interface AttachResult {
+  ok: boolean
+  attached: boolean
+  reason?: 'restricted' | 'noTab' | 'injectionFailed'
 }
 
 /**
@@ -177,8 +219,14 @@ export interface PanelState {
  * made (clear, settings change) alters what the next render must show, so making
  * the snapshot mandatory means the panel can never be left displaying state it has
  * already invalidated — and callers need no narrowing to reach `state`.
+ *
+ * `attach` rides along on the one request that needs to report more than the new
+ * state: whether the hook was injected, was already there, or could not be placed
+ * at all. Those three outcomes look the same in a state snapshot.
  */
-export type PanelResponse = { ok: true; state: PanelState } | { ok: false; error: string }
+export type PanelResponse =
+  | { ok: true; state: PanelState; attach?: AttachResult }
+  | { ok: false; error: string }
 
 /** Unsolicited worker → panel pushes. */
 export type WorkerEvent =

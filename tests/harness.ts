@@ -269,7 +269,15 @@ export class ChromeHarness {
 
   /** The most recent arm instruction sent to a tab, if any. */
   lastArm(tabId: number): SentToTab | undefined {
-    return [...this.toTabs].reverse().find((sent) => sent.tabId === tabId)
+    // Probe messages (`{type:'probe'}`) also travel through tabs.sendMessage but
+    // are not arm instructions. Filter them: without this, the presence probe
+    // that buildPanelState sends becomes the "last arm" and makes isArmed report
+    // false on a tab that is genuinely armed.
+    return [...this.toTabs]
+      .reverse()
+      .find(
+        (sent) => sent.tabId === tabId && (sent.message as { type?: string }).type === 'arm',
+      )
   }
 
   /** Whether a tab was last told to capture. */

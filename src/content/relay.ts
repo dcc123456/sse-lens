@@ -40,6 +40,7 @@ import {
   type PageMessage,
   type RelayHello,
   type RelayMessage,
+  type RelayProbe,
   type RelayToWorker,
 } from '../lib/messages'
 
@@ -108,17 +109,28 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 })
 
 /**
- * Worker-initiated arm changes.
+ * Worker-initiated arm changes, plus the presence probe.
  *
- * Needed because arming happens when the *panel* opens, which is not triggered
- * by any page activity — without this the page would stay disarmed until it
- * happened to make a request.
+ * Arming is needed because it happens when the *panel* opens, which is not
+ * triggered by any page activity — without this the page would stay disarmed until
+ * it happened to make a request.
+ *
+ * The probe is answered explicitly rather than relying on the implicit resolution
+ * of a listener that returns nothing: the worker uses "did sendMessage resolve?"
+ * to decide whether this tab has a content script at all, and an answer that
+ * depends on listener-return subtleties would make that signal fragile.
  */
-chrome.runtime.onMessage.addListener((message: unknown) => {
-  if (!message || typeof message !== 'object') return
-  const candidate = message as RelayMessage
-  if (candidate.type !== 'arm') return
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  if (!message || typeof message !== 'object') return false
+
+  const candidate = message as RelayMessage | RelayProbe
+  if (candidate.type === 'probe') {
+    sendResponse({ present: true })
+    return false
+  }
+  if (candidate.type !== 'arm') return false
   toPage(candidate)
+  return false
 })
 
 // Announce immediately, so a reload of an already-inspected tab re-arms without

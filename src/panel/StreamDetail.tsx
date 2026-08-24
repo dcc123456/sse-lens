@@ -19,7 +19,7 @@
  * @module panel/StreamDetail
  */
 
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   Badge,
   Button,
@@ -28,9 +28,18 @@ import {
   HeaderTable,
   JsonTree,
   Notice,
-  resolveBulk,
-  type BulkToggle,
 } from './components'
+import {
+  allRowsOpen,
+  isRowOpen,
+  nextBulk,
+  setAllRows,
+  toggleRow,
+  COLLAPSED,
+  NO_BULK,
+  type BulkSelection,
+  type BulkToggle,
+} from './bulk'
 import { formatBytes, formatDuration, formatOffset, summariseEvent } from './format'
 import { formatEventData, mergeDeltas, parseEventJson } from '../lib/deltas'
 import { exportAsCurl, exportAsJson, exportAsNdjson, suggestFilename } from '../lib/export'
@@ -51,30 +60,30 @@ const WINDOW_SIZE = 80
 
 // --- Events tab --------------------------------------------------------------
 
+/**
+ * One frame.
+ *
+ * Deliberately stateless about being open: `EventsTab` owns that, because a single
+ * toggle whose label reflects reality has to be able to ask "is everything open?",
+ * and it cannot ask rows that each hold their own answer.
+ */
 function EventRow({
   event,
   startedAt,
+  open,
+  onToggle,
   bulk,
   t,
 }: {
   event: SseEvent
   startedAt: number
+  open: boolean
+  onToggle: () => void
+  /** Drives the JSON tree inside this row, which does keep local state. */
   bulk: BulkToggle
   t: Translate
 }): ReactNode {
-  const [open, setOpen] = useState(false)
   const [asTree, setAsTree] = useState(true)
-
-  /**
-   * Applies a bulk expand/collapse once, then returns control to the user.
-   *
-   * Same one-shot rule as the JSON tree, via the same helper so the two cannot
-   * drift: after expanding everything, collapsing a single row by hand must stick.
-   */
-  const appliedNonce = useRef(bulk.nonce)
-  const decision = resolveBulk(bulk, appliedNonce.current, open)
-  appliedNonce.current = decision.nonce
-  if (decision.apply) setOpen(decision.open)
 
   /*
    * Parsing stays deferred until the row is open, which is what makes expand-all
@@ -86,12 +95,7 @@ function EventRow({
 
   return (
     <div className="event">
-      <button
-        type="button"
-        className="event-head"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-      >
+      <button type="button" className="event-head" onClick={onToggle} aria-expanded={open}>
         <span className="event-seq">{event.seq}</span>
         {event.event !== 'message' && !isComment && <Badge>{event.event}</Badge>}
         {isComment && <Badge tone="info">{t('eventComment')}</Badge>}
@@ -149,21 +153,32 @@ function EventRow({
 function EventsTab({ stream, t }: { stream: StreamRecord; t: Translate }): ReactNode {
   /** How many frames beyond the newest window the user has asked to see. */
   const [expanded, setExpanded] = useState(0)
+
   /**
-   * The latest bulk expand/collapse instruction.
+   * Which rows are open, owned here rather than by each row.
    *
-   * Rows mounted later adopt whatever the current instruction says, so frames
-   * arriving during a live stream match the state the user chose instead of
-   * appearing collapsed after an expand-all.
+   * Lifting this is what lets one button report the truth: the label can only say
+   * "collapse all" if something can actually be asked whether everything is open.
    */
-  const [bulk, setBulk] = useState<BulkToggle>({ open: false, nonce: 0 })
-  const sendBulk = (open: boolean): void =>
-    setBulk((current) => ({ open, nonce: current.nonce + 1 }))
+  const [rows, setRows] = useState<BulkSelection>(COLLAPSED)
+
+  /** Drives the JSON tree *inside* each open row; see `bulk.ts` for why it differs. */
+  const [treeBulk, setTreeBulk] = useState<BulkToggle>(NO_BULK)
 
   const total = stream.events.length
   const visibleCount = Math.min(total, WINDOW_SIZE + expanded)
   const start = total - visibleCount
   const visible = stream.events.slice(start)
+
+  const visibleIds = useMemo(() => visible.map((event) => event.seq), [visible])
+  const everythingOpen = allRowsOpen(rows, visibleIds)
+
+  /** One button: it does whatever its label says. */
+  const toggleAll = (): void => {
+    const open = !everythingOpen
+    setRows(setAllRows(open))
+    setTreeBulk((current) => nextBulk(current, open))
+  }
 
   if (total === 0) {
     return (
@@ -179,18 +194,22 @@ function EventsTab({ stream, t }: { stream: StreamRecord; t: Translate }): React
   return (
     <div>
       {/*
-       * Sticky: the point of these buttons is reaching them without scrolling
-       * back up through the frames they just opened.
+       * Sticky: the point of this button is reaching it without scrolling back up
+       * through the frames it just opened.
        */}
       <div className="event-toolbar">
-        <Button onClick={() => sendBulk(true)} variant="ghost" size="tiny">
-          {t('expandAll')}
-        </Button>
-        <Button onClick={() => sendBulk(false)} variant="ghost" size="tiny">
-          {t('collapseAll')}
+        <Button
+          onClick={toggleAll}
+          variant="ghost"
+          size="tiny"
+          title={t('bulkScope', { shown: visible.length, total })}
+        >
+          {/* The caret states the resulting direction, so the button reads as an
+              action rather than as a description of the present state. */}
+          {everythingOpen ? `▴ ${t('collapseAll')}` : `▾ ${t('expandAll')}`}
         </Button>
         <span className="topbar-spacer" />
-        {/* States how many rows the buttons actually affect: a long stream is
+        {/* States how many rows the button actually affects: a long stream is
             windowed, and the frames outside the window are not mounted. */}
         <span className="faint small mono" title={t('bulkScope', { shown: visible.length, total })}>
           {visible.length}/{total}
@@ -217,7 +236,15 @@ function EventsTab({ stream, t }: { stream: StreamRecord; t: Translate }): React
       )}
 
       {visible.map((event) => (
-        <EventRow key={event.seq} event={event} startedAt={stream.startedAt} bulk={bulk} t={t} />
+        <EventRow
+          key={event.seq}
+          event={event}
+          startedAt={stream.startedAt}
+          open={isRowOpen(rows, event.seq)}
+          onToggle={() => setRows((current) => toggleRow(current, event.seq))}
+          bulk={treeBulk}
+          t={t}
+        />
       ))}
 
       {stream.tail !== undefined && (

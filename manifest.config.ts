@@ -35,10 +35,18 @@ import { defineManifest } from '@crxjs/vite-plugin'
  *   active tab and following activation/navigation events.
  * - `sidePanel`: the reader lives in a side panel so it survives focus changes
  *   and can sit beside the page under observation, unlike a popup.
+ * - `scripting`: for **recovery only**, never for normal operation. Chrome does
+ *   not retroactively inject content scripts into tabs that were already open
+ *   when the extension was installed, updated or reloaded. Such a tab has no
+ *   hook at all, and the panel would show an empty list indistinguishable from
+ *   "this page has not streamed yet". The panel therefore offers an explicit
+ *   attach action for that case; see `attach.ts`. Verified in a real browser:
+ *   `tabs.sendMessage` rejects for such a tab, which is what makes the state
+ *   detectable rather than guessed.
  *
  * Deliberately NOT requested: `webRequest` (cannot read bodies — see above),
- * `debugger`, `scripting` (nothing is injected on demand; both scripts are
- * static), and `unlimitedStorage` (captures are quota-trimmed and session-only).
+ * `debugger`, and `unlimitedStorage` (captures are quota-trimmed and
+ * session-only).
  *
  * `host_permissions` is broad because a capture target can be any http(s)
  * origin; the URL filter in Settings narrows what is actually recorded.
@@ -56,7 +64,7 @@ export default defineManifest({
   // `world: 'MAIN'` in a static content script requires Chrome 111; the side
   // panel API requires 114. 116 matches the rest of this toolchain.
   minimum_chrome_version: '116',
-  permissions: ['storage', 'tabs', 'sidePanel'],
+  permissions: ['storage', 'tabs', 'sidePanel', 'scripting'],
   host_permissions: ['http://*/*', 'https://*/*'],
   icons: {
     16: 'icons/icon-16.png',

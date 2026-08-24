@@ -15,7 +15,7 @@
  */
 
 import { useMemo, type ReactNode } from 'react'
-import { ConfirmButton, EmptyState, Notice } from './components'
+import { Button, ConfirmButton, EmptyState, Notice } from './components'
 import { SettingsTab } from './SettingsTab'
 import { StreamDetail } from './StreamDetail'
 import { StreamList } from './StreamList'
@@ -39,6 +39,37 @@ export function App(): ReactNode {
 
   const capturing = state.settings.captureEnabled && state.unavailableReason === undefined
 
+  /**
+   * What the last attach attempt achieved.
+   *
+   * Deliberately three outcomes, not two. "Already listening" is reported plainly
+   * because it means a missed stream had a *different* cause — the page captured
+   * `fetch` before the hook ran — and only a reload can fix that. Collapsing it
+   * into a cheerful "attached" would send the user to trigger the stream again and
+   * watch it be missed a second time with no explanation.
+   */
+  const attachOutcome = (): ReactNode => {
+    const result = controller.attachResult
+    if (result === null) return null
+
+    if (!result.ok) {
+      return (
+        <Notice tone="warn" title={t('attachFailed')}>
+          {result.reason === 'restricted' ? t('attachFailedRestricted') : t('attachLimits')}
+        </Notice>
+      )
+    }
+    return result.attached ? (
+      <Notice tone="info" title={t('attachOk')}>
+        {t('attachOkHint')}
+      </Notice>
+    ) : (
+      <Notice tone="warn" title={t('attachAlready')}>
+        {t('attachAlreadyHint')}
+      </Notice>
+    )
+  }
+
   /** Names the specific reason nothing is listed, with the fix for it. */
   const emptyExplanation = (): ReactNode => {
     if (state.tab === null) {
@@ -54,6 +85,31 @@ export function App(): ReactNode {
       case 'disabled':
         return (
           <Notice title={t('unavailableDisabled')}>{t('unavailableDisabledHint')}</Notice>
+        )
+      case 'noHook':
+        /*
+         * Recoverable, unlike the cases above: Chrome never injected into this
+         * tab because it predates the extension. Previously this looked like an
+         * ordinary empty list, so the extension appeared broken.
+         */
+        return (
+          <>
+            <Notice tone="warn" title={t('unavailableNoHook')}>
+              {t('unavailableNoHookHint')}
+            </Notice>
+            <div className="attach-actions">
+              <Button onClick={controller.attach} disabled={controller.attaching}>
+                {controller.attaching ? t('attaching') : t('attachNow')}
+              </Button>
+              <Button variant="ghost" onClick={() => void chrome.tabs.reload()}>
+                {t('reloadHint')}
+              </Button>
+            </div>
+            {/* The limits are stated up front, not only after a failure: a user
+                who expects a running stream to be recovered would otherwise read
+                a successful attach as a bug. */}
+            <p className="faint small attach-note">{t('attachLimits')}</p>
+          </>
         )
       default:
         // Nothing is wrong; the page simply has not streamed yet. The reload hint
@@ -91,6 +147,26 @@ export function App(): ReactNode {
           />
         )}
 
+        {/*
+         * Always reachable, not only on the empty state: a page that *was*
+         * captured can still be re-attached after an extension reload, and the
+         * empty-state button is invisible once the first stream has arrived.
+         */}
+        {screen === 'streams' &&
+          state.tab !== null &&
+          state.unavailableReason !== 'restricted' &&
+          state.unavailableReason !== 'disabled' && (
+            <Button
+              variant="ghost"
+              size="tiny"
+              onClick={controller.attach}
+              disabled={controller.attaching}
+              title={t('attachNow')}
+            >
+              {controller.attaching ? t('attaching') : '⊕'}
+            </Button>
+          )}
+
         <button
           type="button"
           className="btn ghost"
@@ -122,6 +198,10 @@ export function App(): ReactNode {
                 {error}
               </Notice>
             )}
+
+            {/* Outside the empty-state branch: once an attach succeeds and a
+                stream arrives, the outcome still explains why the list changed. */}
+            {attachOutcome()}
 
             {/* `loading` is checked before the empty state so a slow first
                 snapshot never flashes a misleading "nothing captured". */}

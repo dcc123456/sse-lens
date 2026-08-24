@@ -8,7 +8,7 @@
  *
  * - In-memory {@link CaptureStore} for speed and for the parser state.
  * - A debounced mirror into `chrome.storage.session`, which survives eviction but
- *   not a browser restart — the right lifetime for captured payloads.
+ *   not a browser restart —the right lifetime for captured payloads.
  * - Lazy rehydration on the first message after a restart, so a panel reopened
  *   after eviction shows the streams it had rather than an empty list.
  *
@@ -21,6 +21,7 @@
  */
 
 import { ArmController, armMessage, isInjectablePage } from './arm'
+import { attachToTab, type AttachDeps } from './attach'
 import { CaptureStore } from './store'
 import { loadSettings, normalizeSettings, saveSettings } from './settings'
 import {
@@ -29,6 +30,7 @@ import {
   type PanelRequest,
   type PanelResponse,
   type PanelState,
+  type RelayProbe,
   type RelayMessage,
   type RelayToWorker,
   type WorkerEvent,
@@ -43,7 +45,7 @@ const SESSION_PREFIX = 'streams:'
  *
  * The arm state has to outlive worker eviction. Without this, a worker that was
  * evicted while the panel sat idle would restart believing no panel was open, and
- * would then refuse to follow the user to the next tab they selected — leaving the
+ * would then refuse to follow the user to the next tab they selected —leaving the
  * panel stuck on "no page selected" until it was closed and reopened.
  */
 const ARM_KEY = 'arm'
@@ -91,13 +93,13 @@ const lastUrlByTab = new Map<number, string>()
  * That is fatal because the store is order-dependent. `stream.headers` and
  * `stream.chunk` resolve a record created by `stream.open`; if `open` has not
  * finished, they find nothing and are silently dropped. The observed failure was
- * exactly this — replies came back in the order `headers`, `chunk`, `open`, and
+ * exactly this —replies came back in the order `headers`, `chunk`, `open`, and
  * the stream reached the panel with no frames at all.
  *
  * It only shows up when a page opens a stream during bootstrap, because then the
  * first messages arrive while the worker is still doing its lazy first-message
  * initialisation. A page that streams after settling awaits nothing and stays in
- * order by luck — which is why capture worked on a page that was already loaded
+ * order by luck —which is why capture worked on a page that was already loaded
  * and broke after navigating.
  *
  * Chaining per tab (not globally) keeps one slow tab from delaying another while
@@ -186,7 +188,7 @@ async function persistArm(): Promise<void> {
     await chrome.storage.session.set({ [ARM_KEY]: arm.snapshot() })
   } catch {
     // Losing this degrades to "the panel needs reopening after an eviction",
-    // which is exactly the bug it exists to prevent — but it must not throw.
+    // which is exactly the bug it exists to prevent —but it must not throw.
   }
 }
 
@@ -375,6 +377,88 @@ async function handlePageMessage(
 
 // --- Panel state -------------------------------------------------------------
 
+/**
+ * Whether a relay answers in this tab.
+ *
+ * This is the only reliable way to tell "no content script here" from "the page
+ * has not streamed yet". Confirmed in a real browser: `tabs.sendMessage` resolves
+ * for a normally loaded page and rejects for a tab with no content script.
+ *
+ * The probe is an inert `{type: 'probe'}` that the relay answers but does not act
+ * on. It must not be an instruction: an earlier version reused `armMessage(false)`
+ * to avoid adding a message type, and because this runs on every state refresh it
+ * disarmed the very tab it was inspecting — capture appeared to work and then
+ * silently stopped. Caught only by a real-browser test, since a fake relay has no
+ * arm state to lose.
+ *
+ * The optional frame id is used after injection, so the attach path can confirm
+ * the relay in *that* frame registered its listener before arming is attempted.
+ */
+async function relayResponds(tabId: number, frameId?: number): Promise<boolean> {
+  try {
+    const probe = { type: 'probe' } satisfies RelayProbe
+    if (frameId === undefined) {
+      await chrome.tabs.sendMessage(tabId, probe)
+    } else {
+      await chrome.tabs.sendMessage(tabId, probe, { frameId })
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Wiring for `attachToTab`, kept here so that module stays testable. */
+const attachDeps: AttachDeps = {
+  getManifest: () => chrome.runtime.getManifest() as chrome.runtime.ManifestV3,
+  isInjectable: isInjectablePage,
+  getTab: async (tabId) => {
+    try {
+      return await chrome.tabs.get(tabId)
+    } catch {
+      return undefined
+    }
+  },
+  listFrames: async (tabId) => {
+    // Without the `webNavigation` permission (deliberately not requested), the
+    // only frame we can enumerate reliably is the top frame. That is where SSE
+    // originates in essentially every case; iframed streams are already covered
+    // by the static content_scripts at document_start. Attempting allFrames here
+    // would let one inaccessible subframe reject the whole injection.
+    let url: string | undefined
+    try {
+      url = (await chrome.tabs.get(tabId)).url
+    } catch {
+      url = undefined
+    }
+    return [{ frameId: 0, url }]
+  },
+  pingRelay: relayResponds,
+  executeScript: async ({ tabId, frameId, world, files }) => {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      world,
+      files,
+      injectImmediately: true,
+    })
+  },
+  waitForRelay: async (tabId, frameId, timeoutMs = 1500) => {
+    // A programmatically injected relay is a loader that dynamically imports its
+    // real chunk; executeScript resolves when the loader is queued, before that
+    // import registers the onMessage listener. Poll for the probe answer so the
+    // caller never sends an arm instruction into a listener that does not exist
+    // yet — which would silently leave the page disarmed and miss later requests.
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await relayResponds(tabId, frameId)) return true
+      await sleep(50)
+    }
+    return false
+  },
+}
+
 async function buildPanelState(): Promise<PanelState> {
   await ensureSettings()
 
@@ -403,6 +487,14 @@ async function buildPanelState(): Promise<PanelState> {
     state.unavailableReason = 'restricted'
   } else if (!settings.captureEnabled) {
     state.unavailableReason = 'disabled'
+  } else if (!(await relayResponds(tabId))) {
+    /*
+     * No content script in an otherwise injectable tab. Chrome does not inject
+     * retroactively, so this tab has been uncapturable since the extension
+     * loaded —previously shown as an ordinary empty list, which read as "the
+     * extension is broken". Reported so the panel can offer to attach.
+     */
+    state.unavailableReason = 'noHook'
   }
   return state
 }
@@ -470,6 +562,49 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         // is exactly what produced a spurious "no page selected".
         await ensureReady()
         sendResponse({ ok: true, state: await buildPanelState() } satisfies PanelResponse)
+      })()
+      return true
+    }
+
+    case 'panel.attach': {
+      void (async () => {
+        await ensureReady()
+        const tabId = await activeTabId()
+        if (tabId === null) {
+          sendResponse({
+            ok: true,
+            state: await buildPanelState(),
+            attach: { ok: false, attached: false, reason: 'noTab' },
+          } satisfies PanelResponse)
+          return
+        }
+
+        // Arm first. Injecting into a tab the worker is not tracking would place
+        // a hook that then sits inert, which looks identical to a failed attach.
+        applyArmTransition(arm.openPanel(tabId))
+
+        const outcome = await attachToTab(attachDeps, tabId)
+        if (outcome.ok) {
+          /*
+           * attachToTab already waited for the top frame's relay to answer a
+           * probe, so the listener exists by the time we arm. This is the fix
+           * for "attached but later requests were missed": a programmatically
+           * injected relay loads its real chunk asynchronously, and an arm sent
+           * immediately after executeScript resolved could land before that
+           * listener registered, dropping the instruction silently.
+           */
+          sendArm(tabId, true)
+        }
+
+        sendResponse({
+          ok: true,
+          state: await buildPanelState(),
+          attach: {
+            ok: outcome.ok,
+            attached: outcome.ok && outcome.alreadyPresent !== true,
+            reason: outcome.failure,
+          },
+        } satisfies PanelResponse)
       })()
       return true
     }
@@ -561,7 +696,7 @@ chrome.tabs.onActivated.addListener((info) => {
  * The user moved to another window.
  *
  * `tabs.onActivated` does not fire for this, so without it the panel would keep
- * showing the previous window's tab after a window switch — the same "wrong page"
+ * showing the previous window's tab after a window switch —the same "wrong page"
  * symptom by a different route.
  */
 chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -641,7 +776,7 @@ chrome.sidePanel
     // from the extensions menu.
   })
 
-/** Settings changed in another context (a second panel) — keep in step. */
+/** Settings changed in another context (a second panel) —keep in step. */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes.settings) return
   settings = normalizeSettings(changes.settings.newValue)

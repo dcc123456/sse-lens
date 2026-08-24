@@ -1,19 +1,35 @@
 /**
  * Bulk expand/collapse tests.
  *
- * The rule these guard is small but has two opposing requirements that are easy to
- * satisfy one at a time and break together:
+ * Two mechanisms are covered, because the panel needs both and they fail in
+ * different ways.
  *
- * 1. An instruction must apply *once*, so a manual click afterwards is not undone.
- * 2. A repeated instruction must still apply, so pressing "expand all" twice works.
+ * `BulkSelection` backs the event list's single toggle. Its hard requirement is
+ * that a frame arriving *after* "expand all" appears expanded — otherwise the
+ * button's label would contradict what is on screen. A plain `Set` of open ids
+ * cannot do that, which is why the representation is a baseline plus exceptions.
  *
- * The obvious implementation — a boolean `forceOpen` prop — satisfies neither: it
- * latches, overriding every later click, and a second identical press produces no
- * observable change at all. Each case below names the symptom it prevents.
+ * `resolveBulk` backs the JSON tree, whose nodes keep local state. Its requirements
+ * oppose each other and are easy to satisfy one at a time: an instruction must
+ * apply *once* (so a later manual click is not undone) yet a *repeated* instruction
+ * must still apply (so pressing the button twice works). A boolean prop satisfies
+ * neither — it latches, and a second identical press is invisible.
+ *
+ * Each case below names the symptom it prevents.
  */
 
 import { describe, expect, it } from 'vitest'
-import { resolveBulk, type BulkToggle } from '../src/panel/components'
+import {
+  allRowsOpen,
+  isRowOpen,
+  nextBulk,
+  resolveBulk,
+  setAllRows,
+  toggleRow,
+  COLLAPSED,
+  NO_BULK,
+  type BulkToggle,
+} from '../src/panel/bulk'
 
 /**
  * Drives one node through a sequence of renders and clicks.
@@ -160,5 +176,146 @@ describe('bulk expand/collapse behaviour', () => {
     // depth rather than being forced closed by the starting toggle value.
     const node = new Node(true, 0).render({ open: false, nonce: 0 })
     expect(node.open).toBe(true)
+  })
+
+  it('never emits a repeated nonce', () => {
+    // Two presses sharing a nonce would make the second one invisible.
+    let bulk = NO_BULK
+    const seen = new Set<number>([bulk.nonce])
+    for (let press = 1; press <= 50; press += 1) {
+      bulk = nextBulk(bulk, press % 2 === 0)
+      expect(seen.has(bulk.nonce), `nonce ${bulk.nonce} repeated`).toBe(false)
+      seen.add(bulk.nonce)
+    }
+  })
+})
+
+describe('BulkSelection: which rows are open', () => {
+  it('starts with everything collapsed', () => {
+    expect(isRowOpen(COLLAPSED, 1)).toBe(false)
+    expect(isRowOpen(COLLAPSED, 999)).toBe(false)
+  })
+
+  it('toggles one row without disturbing its neighbours', () => {
+    const selection = toggleRow(COLLAPSED, 5)
+    expect(isRowOpen(selection, 5)).toBe(true)
+    expect(isRowOpen(selection, 4)).toBe(false)
+    expect(isRowOpen(selection, 6)).toBe(false)
+  })
+
+  it('toggles a row back closed', () => {
+    const selection = toggleRow(toggleRow(COLLAPSED, 5), 5)
+    expect(isRowOpen(selection, 5)).toBe(false)
+  })
+
+  it('does not mutate the selection it was given', () => {
+    // React relies on identity to detect the change, and a shared mutable Set
+        // would leak state between renders.
+    const before = toggleRow(COLLAPSED, 1)
+    const after = toggleRow(before, 2)
+    expect(isRowOpen(before, 2)).toBe(false)
+    expect(after).not.toBe(before)
+    expect(COLLAPSED.exceptions.size).toBe(0)
+  })
+
+  it('expands rows that do not exist yet — the live-stream requirement', () => {
+    // The reason a Set of open ids is the wrong representation: a frame arriving
+    // after expand-all would be absent from it and render collapsed, while the
+    // button still claimed everything was open.
+    const selection = setAllRows(true)
+    expect(isRowOpen(selection, 1)).toBe(true)
+    expect(isRowOpen(selection, 100_000)).toBe(true)
+  })
+
+  it('collapses rows that do not exist yet', () => {
+    const selection = setAllRows(false)
+    expect(isRowOpen(selection, 7)).toBe(false)
+  })
+
+  it('lets one row be closed again after expand-all', () => {
+    const selection = toggleRow(setAllRows(true), 3)
+    expect(isRowOpen(selection, 3)).toBe(false)
+    // Everything else, including future rows, stays open.
+    expect(isRowOpen(selection, 4)).toBe(true)
+    expect(isRowOpen(selection, 500)).toBe(true)
+  })
+
+  it('lets one row be opened after collapse-all', () => {
+    const selection = toggleRow(setAllRows(false), 3)
+    expect(isRowOpen(selection, 3)).toBe(true)
+    expect(isRowOpen(selection, 4)).toBe(false)
+  })
+
+  it('clears exceptions on a bulk action, so it is idempotent', () => {
+    const messy = toggleRow(toggleRow(setAllRows(true), 1), 2)
+    const reset = setAllRows(true)
+    expect(isRowOpen(reset, 1)).toBe(true)
+    expect(isRowOpen(reset, 2)).toBe(true)
+    expect(reset.exceptions.size).toBe(0)
+    expect(messy.exceptions.size).toBe(2)
+  })
+})
+
+describe('the single toggle label', () => {
+  /** What the button should offer next, given the rendered rows. */
+  const offersCollapse = (selection: Parameters<typeof allRowsOpen>[0], ids: number[]): boolean =>
+    allRowsOpen(selection, ids)
+
+  const ids = [1, 2, 3]
+
+  it('offers expand when everything is collapsed', () => {
+    expect(offersCollapse(COLLAPSED, ids)).toBe(false)
+  })
+
+  it('offers collapse once every rendered row is open', () => {
+    expect(offersCollapse(setAllRows(true), ids)).toBe(true)
+  })
+
+  it('offers expand while any row is still closed', () => {
+    // Otherwise the button would say "collapse all" over a partly closed list,
+    // and pressing it would leave the remaining rows unopened.
+    const partial = toggleRow(COLLAPSED, 2)
+    expect(offersCollapse(partial, ids)).toBe(false)
+  })
+
+  it('reverts to offering expand after one row is manually collapsed', () => {
+    const selection = toggleRow(setAllRows(true), 2)
+    expect(offersCollapse(selection, ids)).toBe(false)
+  })
+
+  it('offers collapse when rows are opened one by one until all are open', () => {
+    let selection = COLLAPSED
+    for (const id of ids) selection = toggleRow(selection, id)
+    expect(offersCollapse(selection, ids)).toBe(true)
+  })
+
+  it('offers expand for an empty list', () => {
+    // There is nothing to collapse, so proposing it would be nonsense.
+    expect(offersCollapse(setAllRows(true), [])).toBe(false)
+    expect(offersCollapse(COLLAPSED, [])).toBe(false)
+  })
+
+  it('judges only the rendered window, not the whole stream', () => {
+    // Frames outside the window are not mounted. Letting them count would leave
+    // the button permanently offering "expand all" on a long stream.
+    const selection = setAllRows(true)
+    expect(offersCollapse(selection, [900, 901, 902])).toBe(true)
+  })
+
+  it('completes the full press cycle', () => {
+    // expand -> collapse -> expand, which is the behaviour that was asked for.
+    let selection = COLLAPSED
+    expect(offersCollapse(selection, ids)).toBe(false)
+
+    selection = setAllRows(!offersCollapse(selection, ids))
+    expect(ids.every((id) => isRowOpen(selection, id))).toBe(true)
+    expect(offersCollapse(selection, ids)).toBe(true)
+
+    selection = setAllRows(!offersCollapse(selection, ids))
+    expect(ids.every((id) => isRowOpen(selection, id))).toBe(false)
+    expect(offersCollapse(selection, ids)).toBe(false)
+
+    selection = setAllRows(!offersCollapse(selection, ids))
+    expect(ids.every((id) => isRowOpen(selection, id))).toBe(true)
   })
 })

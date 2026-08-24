@@ -10,6 +10,7 @@
  */
 
 import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { resolveBulk, type BulkToggle } from './bulk'
 import type { Translate } from '../lib/i18n'
 
 // --- Button ------------------------------------------------------------------
@@ -171,50 +172,6 @@ const DEFAULT_OPEN_DEPTH = 2
 
 /** Children rendered before the node collapses itself. */
 const CHILD_LIMIT = 200
-
-/**
- * A bulk expand/collapse instruction.
- *
- * Carries a `nonce` because the alternative — a bare boolean — cannot express
- * "expand everything *again*". Once a user has expanded all and then collapsed one
- * node by hand, a second click on the same button produces an identical boolean,
- * no node sees a change, and the button appears dead. Bumping the nonce makes each
- * press a distinct event, which is what the nodes actually need to react to.
- */
-export interface BulkToggle {
-  open: boolean
-  nonce: number
-}
-
-/**
- * Decides whether a collapsible node should adopt a bulk instruction.
- *
- * Extracted as a pure function because the rule is easy to state and easy to get
- * wrong, and both call sites (JSON nodes and event rows) must implement it
- * identically. Two properties matter:
- *
- * - **One-shot.** An instruction applies at most once per nonce, so local clicks
- *   afterwards are never overridden. A latching override would make every manual
- *   collapse snap back open.
- * - **Repeatable.** A new nonce with the same `open` value still applies, which is
- *   what makes pressing "expand all" a second time do something.
- *
- * @param bulk the current instruction, or undefined when bulk control is unused
- * @param appliedNonce the nonce this node last consumed
- * @param open the node's present state
- */
-export function resolveBulk(
-  bulk: BulkToggle | undefined,
-  appliedNonce: number,
-  open: boolean,
-): { apply: boolean; open: boolean; nonce: number } {
-  if (bulk === undefined || bulk.nonce === appliedNonce) {
-    return { apply: false, open, nonce: appliedNonce }
-  }
-  // The nonce is consumed even when the state already matches, so a redundant
-  // instruction cannot be re-applied later and undo an intervening click.
-  return { apply: bulk.open !== open, open: bulk.open, nonce: bulk.nonce }
-}
 
 interface TreeProps {
   value: unknown

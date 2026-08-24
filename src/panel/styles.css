@@ -487,6 +487,25 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/*
+ * Recovery actions for a tab with no hook.
+ *
+ * Wraps rather than scrolling: the panel is ~360px and the two labels are long in
+ * Chinese, so a nowrap row would clip "Start listening" to nothing.
+ */
+.attach-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 4px;
+}
+
+.attach-note {
+  margin: 0;
+  padding: 0 10px 10px;
+  line-height: 1.5;
+}
+
 .event {
   border-bottom: 1px solid var(--border);
 }
