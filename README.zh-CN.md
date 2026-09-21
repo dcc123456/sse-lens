@@ -5,6 +5,7 @@
 一个 Chrome 扩展，把**当前标签页**的 Server-Sent Events 渲染成可读的侧边栏内容：分帧事件、JSON 树、重组后的 LLM 增量文本，以及原始字节。
 
 做它的原因很简单：DevTools 的 Network 面板把 SSE 显示成一坨不断变长的 `data:` 文本。技术上完整，实际上没法读——尤其是逐 token 返回的 LLM 流，你真正想看的东西（那个回答）被摊在了四百个帧里。
+<img width="3803" height="1943" alt="image" src="https://github.com/user-attachments/assets/b1a0ad4a-2431-4ff1-9984-19a2ec2ae13c" />
 
 ---
 
