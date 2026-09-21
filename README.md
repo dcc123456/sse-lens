@@ -6,6 +6,9 @@ A Chrome extension that renders the **current tab's** Server-Sent Events in a re
 
 Built because the DevTools Network tab shows SSE as one growing blob of `data:` lines. That is technically complete and practically unreadable — especially for a token-by-token LLM stream, where the thing you actually want (the answer) is spread across four hundred frames.
 
+<img width="3803" height="1943" alt="image" src="https://github.com/user-attachments/assets/e4068070-55d4-44f2-98d2-2e0f9120cd79" />
+
+
 ---
 
 ## Why you would use this
