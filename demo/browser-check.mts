@@ -409,6 +409,140 @@ async function main(): Promise<void> {
       state.streams.length === before,
       `before=${before} after=${state.streams.length}`,
     )
+
+    // --- the Raw tab's JSON view ---------------------------------------------
+
+    /*
+     * Driven through real clicks on the real panel, because the point of this view
+     * is what a person reads: a splitter that agrees with `panelState` in a unit
+     * test can still render nothing on screen.
+     */
+    await page.click('[data-demo="fetch-deltas"]')
+    await sleep(4000)
+
+    const deltasRow = panel.locator('.stream-row', { hasText: '/deltas' }).first()
+    await deltasRow.click()
+    await sleep(400)
+
+    /*
+     * The panel follows the browser's UI language, which on this machine is
+     * Chinese, so every label is matched in both dictionaries. Matching on the
+     * label at all is the point: it proves the click landed on the tab it names
+     * rather than on whatever happened to be at that position.
+     */
+    await panel.locator('.tabbar button').filter({ hasText: /Raw|原始/ }).first().click()
+    await sleep(400)
+
+    const bytes = await panel.locator('pre.payload').first().innerText()
+    check(
+      'the raw view still shows the wire text by default',
+      bytes.includes('data:') && bytes.includes('"choices"'),
+      `${bytes.slice(0, 40).replace(/\n/g, '\\n')}…`,
+    )
+
+    await panel.locator('.btn').filter({ hasText: /^JSON$/ }).first().click()
+    await sleep(600)
+
+    const frameRows = await panel.locator('.scroll .event').count()
+    check(
+      'the raw JSON view cuts the text into one row per frame',
+      frameRows >= 10,
+      `rows=${frameRows}`,
+    )
+
+    /*
+     * A row parses nothing until it opens, which is what keeps expand-all on a
+     * retained multi-megabyte tail cheap. Asserted rather than trusted because it
+     * is the one property a later "simplification" would silently break.
+     */
+    const treesBefore = await panel.locator('.json-tree').count()
+    check('closed raw frames render no tree', treesBefore === 0, `trees=${treesBefore}`)
+
+    await panel
+      .locator('.event-toolbar .btn')
+      .filter({ hasText: /Expand all|全部展开/ })
+      .first()
+      .click()
+    await sleep(900)
+
+    /*
+     * A key label is rendered with its punctuation as a child node, so the text
+     * read back is `choices:` — stripped here rather than in the component, which
+     * renders the colon on purpose.
+     */
+    const keyNames = (keys: string[]): string[] => keys.map((key) => key.replace(/:$/, ''))
+
+    const treeKeys = await panel.locator('.json-key').allInnerTexts()
+    check(
+      'an expanded raw frame renders its payload as a JSON tree',
+      keyNames(treeKeys).includes('choices') && keyNames(treeKeys).includes('model'),
+      `keys=${new Set(keyNames(treeKeys)).size}`,
+    )
+
+    /*
+     * Deep keys are mounted only when their parent opens, which is what keeps a
+     * tree on a narrow panel from rendering thousands of rows at once. Driven by
+     * real clicks until `content` appears, since "the same tree as the Events tab"
+     * is exactly the claim that a per-tab copy of the renderer would break.
+     */
+    const firstRow = panel.locator('.scroll .event').first()
+    for (let depth = 0; depth < 4; depth += 1) {
+      const closedNode = firstRow.locator('button.json-toggle[aria-expanded="false"]')
+      if ((await closedNode.count()) === 0) break
+      await closedNode.first().click()
+      await sleep(250)
+    }
+    const deepKeys = keyNames(await firstRow.locator('.json-key').allInnerTexts())
+    check(
+      'the raw tree opens deeper on click, like an event row',
+      deepKeys.includes('content'),
+      `content=${deepKeys.filter((key) => key === 'content').length}`,
+    )
+
+    await panel.screenshot({ path: '/tmp/sse-lens-raw-json.png' })
+    console.log('  (info) panel screenshot: /tmp/sse-lens-raw-json.png')
+
+    await panel
+      .locator('.event-toolbar .btn')
+      .filter({ hasText: /Collapse all|全部折叠/ })
+      .first()
+      .click()
+    await sleep(900)
+    const treesCollapsed = await panel.locator('.json-tree').count()
+    check(
+      'one button collapses every raw frame it expanded',
+      treesCollapsed === 0,
+      `trees=${treesCollapsed} keysShown=${treeKeys.length}`,
+    )
+
+    /*
+     * NDJSON has no blank lines, so the same view has to cut records by line
+     * instead — a different branch of the splitter, and the format a plain
+     * `/ndjson` endpoint really returns.
+     */
+    await page.click('[data-demo="ndjson"]')
+    await sleep(2500)
+    // Selecting a stream replaced the list with its detail, so go back first.
+    await panel.locator('.detail-head .btn').first().click()
+    await sleep(400)
+    await panel.locator('.stream-row').filter({ hasText: '/ndjson' }).first().click()
+    await sleep(400)
+    await panel.locator('.tabbar button').filter({ hasText: /Raw|原始/ }).first().click()
+    await sleep(300)
+    await panel.locator('.btn').filter({ hasText: /^JSON$/ }).first().click()
+    await sleep(500)
+    await panel
+      .locator('.event-toolbar .btn')
+      .filter({ hasText: /Expand all|全部展开/ })
+      .first()
+      .click()
+    await sleep(700)
+    const ndjsonKeys = keyNames(await panel.locator('.json-key').allInnerTexts())
+    check(
+      'an NDJSON raw body cuts one row per record',
+      ndjsonKeys.includes('seq') && ndjsonKeys.includes('text'),
+      `keys=${new Set(ndjsonKeys).size}`,
+    )
   } finally {
     await context.close()
     server.kill()

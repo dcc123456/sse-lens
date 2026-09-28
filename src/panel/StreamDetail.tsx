@@ -41,6 +41,13 @@ import {
   type BulkToggle,
 } from './bulk'
 import { formatBytes, formatDuration, formatOffset, summariseEvent } from './format'
+import {
+  framingFor,
+  frameEvents,
+  splitRawFrames,
+  type RawFraming,
+  type RawFrame,
+} from './rawFrames'
 import { formatEventData, mergeDeltas, parseEventJson } from '../lib/deltas'
 import { exportAsCurl, exportAsJson, exportAsNdjson, suggestFilename } from '../lib/export'
 import { ALWAYS_REDACTED_HEADERS } from '../lib/redact'
@@ -290,6 +297,107 @@ function MergedTab({ stream, t }: { stream: StreamRecord; t: Translate }): React
 
 // --- Raw tab -----------------------------------------------------------------
 
+/**
+ * One frame of the retained raw text, in the Raw tab's JSON view.
+ *
+ * The row is the Events tab's row: same classes, same caret, same tree, because
+ * the two views show the same payload and reading them differently would be a
+ * puzzle for no benefit. It differs in what it is built from — this frame is cut
+ * out of the wire text here, not handed over already parsed — and in showing the
+ * block's own text whenever the format yields no payload for it.
+ */
+function RawFrameRow({
+  frame,
+  framing,
+  index,
+  open,
+  onToggle,
+  bulk,
+  t,
+}: {
+  frame: RawFrame
+  framing: RawFraming
+  index: number
+  open: boolean
+  onToggle: () => void
+  bulk: BulkToggle
+  t: Translate
+}): ReactNode {
+  const [asTree, setAsTree] = useState(true)
+
+  /*
+   * Parsing waits for the click. The retained tail can hold thousands of frames,
+   * and an expand-all that JSON.parsed every one of them is the cost the Events
+   * tab windows to avoid — so a closed row here stays as cheap as one there.
+   */
+  const parsed = useMemo(
+    () => (open ? frameEvents(frame, framing)[0] : undefined),
+    [open, frame, framing],
+  )
+  const json = useMemo(
+    () => (open && parsed !== undefined ? parseEventJson(parsed.data) : undefined),
+    [open, parsed],
+  )
+  const isComment = parsed?.comment !== undefined
+
+  return (
+    <div className="event">
+      <button type="button" className="event-head" onClick={onToggle} aria-expanded={open}>
+        <span className="event-seq">{index}</span>
+        {parsed !== undefined && parsed.event !== 'message' && !isComment && (
+          <Badge>{parsed.event}</Badge>
+        )}
+        {isComment && <Badge tone="info">{t('eventComment')}</Badge>}
+        {/* Stated on the row: this block never ended, so anything inside it is
+            what the stream got to, not a frame the server completed. */}
+        {!frame.complete && <Badge tone="warn">{t('tailPending')}</Badge>}
+        <span className="event-summary">
+          {summariseEvent(parsed?.data ?? frame.text, parsed?.comment)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="event-body">
+          <div className="event-fields">
+            {parsed?.id !== undefined && (
+              <Badge>
+                {t('eventId')}: {parsed.id}
+              </Badge>
+            )}
+            {parsed?.retry !== undefined && (
+              <Badge>
+                {t('eventRetry')}: {parsed.retry}
+              </Badge>
+            )}
+            <span className="topbar-spacer" />
+            {json !== undefined && (
+              <Button
+                onClick={() => setAsTree(!asTree)}
+                variant="ghost"
+                size="tiny"
+                title={asTree ? t('showText') : t('showJson')}
+              >
+                {asTree ? t('showText') : t('showJson')}
+              </Button>
+            )}
+            <CopyButton text={frame.text} label={t('copyEvent')} t={t} size="tiny" />
+          </div>
+
+          {isComment ? (
+            <pre className="payload plain">{parsed?.comment}</pre>
+          ) : json !== undefined && asTree ? (
+            <JsonTree value={json} bulk={bulk} />
+          ) : (
+            // Not JSON, or the bytes themselves: either way this is the block as
+            // it arrived, which is the one thing this tab guarantees.
+            <pre className="payload">{frame.text}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RawTab({
   stream,
   raw,
@@ -301,25 +409,121 @@ function RawTab({
   rawTruncated: boolean
   t: Translate
 }): ReactNode {
+  /*
+   * Bytes are the default. This tab exists to answer "what actually came down
+   * the wire", and reformatting it by default would make the answer a summary —
+   * which is the other tab. JSON is one click away.
+   */
+  const [asTree, setAsTree] = useState(false)
+  const [rows, setRows] = useState<BulkSelection>(COLLAPSED)
+  const [treeBulk, setTreeBulk] = useState<BulkToggle>(NO_BULK)
+  const [expanded, setExpanded] = useState(0)
+
+  const framing = useMemo(() => framingFor(raw), [raw])
+  const frames = useMemo(
+    () => (asTree ? splitRawFrames(raw, framing) : []),
+    [asTree, raw, framing],
+  )
+
+  const total = frames.length
+  const visibleCount = Math.min(total, WINDOW_SIZE + expanded)
+  const start = total - visibleCount
+  const visibleIds = useMemo(() => frames.slice(start).map((_, i) => i + start), [frames, start])
+  const everythingOpen = allRowsOpen(rows, visibleIds)
+
+  const toggleAll = (): void => {
+    const open = !everythingOpen
+    setRows(setAllRows(open))
+    setTreeBulk((current) => nextBulk(current, open))
+  }
+
   if (stream.kind === 'eventsource') {
     return <Notice tone="info" title={t('tabRaw')}>{t('eventSourceCaveat')}</Notice>
   }
   if (raw === '') {
     return <EmptyState title={t('rawEmpty')} />
   }
-  return (
-    <div style={{ padding: 10 }}>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <span className="faint small mono">{formatBytes(stream.bytes, t)}</span>
-        <span className="topbar-spacer" />
-        <CopyButton text={raw} label={t('copyMerged')} t={t} size="tiny" />
+
+  if (!asTree) {
+    return (
+      <div style={{ padding: 10 }}>
+        <div className="row" style={{ marginBottom: 8 }}>
+          <span className="faint small mono">{formatBytes(stream.bytes, t)}</span>
+          <span className="topbar-spacer" />
+          <Button
+            onClick={() => setAsTree(true)}
+            variant="ghost"
+            size="tiny"
+            title={t('showJson')}
+          >
+            {t('showJson')}
+          </Button>
+          <CopyButton text={raw} label={t('copyMerged')} t={t} size="tiny" />
+        </div>
+        {/* Stated rather than implied: a slice presented as the whole response
+            would make someone conclude the server sent less than it did. */}
+        {rawTruncated && <Notice tone="warn">{t('rawTruncatedHead')}</Notice>}
+        <pre className="payload" style={{ maxHeight: 'none' }}>
+          {raw}
+        </pre>
       </div>
-      {/* Stated rather than implied: a slice presented as the whole response
-          would make someone conclude the server sent less than it did. */}
+    )
+  }
+
+  return (
+    <div>
+      <div className="event-toolbar">
+        <Button
+          onClick={toggleAll}
+          variant="ghost"
+          size="tiny"
+          title={t('bulkScope', { shown: visibleIds.length, total })}
+        >
+          {everythingOpen ? `▴ ${t('collapseAll')}` : `▾ ${t('expandAll')}`}
+        </Button>
+        {/* Back to the bytes. Its own button rather than a second label on the
+            bulk one, because the two answer different questions. */}
+        <Button onClick={() => setAsTree(false)} variant="ghost" size="tiny" title={t('showText')}>
+          {t('showText')}
+        </Button>
+        <span className="topbar-spacer" />
+        <span
+          className="faint small mono"
+          title={t('bulkScope', { shown: visibleIds.length, total })}
+        >
+          {visibleIds.length}/{total}
+        </span>
+      </div>
+
       {rawTruncated && <Notice tone="warn">{t('rawTruncatedHead')}</Notice>}
-      <pre className="payload" style={{ maxHeight: 'none' }}>
-        {raw}
-      </pre>
+
+      {/* Frame numbers are within the retained text, which the notice above is
+          the reason for: an absolute index would imply a cut tail starts at 0. */}
+      {start > 0 && (
+        <button
+          type="button"
+          className="window-toggle"
+          onClick={() => setExpanded(expanded + WINDOW_SIZE)}
+        >
+          {t('olderEventsHidden', { count: start })}
+        </button>
+      )}
+
+      {frames.slice(start).map((frame, offset) => {
+        const index = start + offset
+        return (
+          <RawFrameRow
+            key={index}
+            frame={frame}
+            framing={framing}
+            index={index}
+            open={isRowOpen(rows, index)}
+            onToggle={() => setRows((current) => toggleRow(current, index))}
+            bulk={treeBulk}
+            t={t}
+          />
+        )
+      })}
     </div>
   )
 }
