@@ -15,7 +15,9 @@
  * Parsers are deliberately *not* rehydrated: a stream cut off mid-frame cannot be
  * resumed correctly, and a fresh parser primed with an empty buffer would
  * mis-frame the continuation. Recorded frames survive; the in-flight frame does
- * not.
+ * not. What *does* survive is the link back to the page: each still-open record
+ * keeps the id its frame's hook uses, so a stream whose frames are more than ~30s
+ * apart keeps being recorded rather than orphaning everything after the gap.
  *
  * @module background/index
  */

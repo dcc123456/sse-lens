@@ -330,6 +330,56 @@ describe('CaptureStore · hydration', () => {
     expect(revived.get(record?.id ?? '')?.events).toHaveLength(1)
   })
 
+  /**
+   * The long-idle-gap case.
+   *
+   * A stream that idles longer than the ~30s MV3 worker lifetime is still open when
+   * the worker comes back, and the page keeps using the id it picked before the
+   * restart. If that id is not restored along with the record, every later frame of
+   * the stream is an orphan and the stream silently stops growing — permanently,
+   * because the page announces `open` only once.
+   */
+  it('continues an open stream after a restart', () => {
+    const first = makeStore()
+    const record = open(first, { localId: 'a' })
+    first.chunk(1, 0, 'a', 'data: x\n\n')
+
+    const revived = makeStore()
+    revived.hydrate(1, first.list(1))
+    const result = revived.chunk(1, 0, 'a', 'data: y\n\n')
+
+    expect(result?.events.map((event) => event.data)).toEqual(['y'])
+    // Resumed frames continue the record's numbering rather than restarting at 0.
+    expect(result?.events.map((event) => event.seq)).toEqual([1])
+    expect(revived.get(record?.id ?? '')?.events.map((event) => event.data)).toEqual(['x', 'y'])
+  })
+
+  it('loses only the frame that was in flight across a restart', () => {
+    const first = makeStore()
+    open(first, { localId: 'a' })
+    first.chunk(1, 0, 'a', 'data: x\n\ndata: part')
+
+    const revived = makeStore()
+    revived.hydrate(1, first.list(1))
+    const result = revived.chunk(1, 0, 'a', 'ial\n\ndata: y\n\n')
+
+    // The resumed parser holds no buffer, so `data: partial` never dispatches and
+    // its remainder reads as an unknown field. Frames after it are intact.
+    expect(result?.events.map((event) => event.data)).toEqual(['y'])
+  })
+
+  it('does not re-link a stream that had already closed', () => {
+    const first = makeStore()
+    const record = open(first, { localId: 'a' })
+    first.chunk(1, 0, 'a', 'data: x\n\n')
+    first.close(1, 0, 'a', { endedAt: 2_000, state: 'closed' })
+
+    const revived = makeStore()
+    revived.hydrate(1, first.list(1))
+    expect(revived.chunk(1, 0, 'a', 'data: late\n\n')).toBeUndefined()
+    expect(revived.get(record?.id ?? '')?.events).toHaveLength(1)
+  })
+
   it('keeps hydrated order newest-first', () => {
     const first = makeStore()
     open(first, { localId: 'a', url: 'https://api.test/1' })

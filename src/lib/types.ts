@@ -55,6 +55,16 @@ export interface SseEvent {
 export interface StreamRecord {
   /** `${tabId}:${frameId}:${counter}` — unique without coordination. */
   id: string
+  /**
+   * The id the page's own hook uses to name this stream.
+   *
+   * Stored on the record, and so in `chrome.storage.session`, because it is the
+   * only key a restarted worker has for re-linking incoming frames to a record it
+   * rehydrated. Without it every stream still open across an eviction orphans its
+   * own later frames and silently stops recording — which is what happens whenever
+   * a stream idles longer than the ~30s MV3 worker lifetime between frames.
+   */
+  localId?: string
   tabId: number
   frameId: number
   /** Frame that opened the stream; differs from the tab URL inside an iframe. */

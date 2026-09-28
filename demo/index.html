@@ -201,6 +201,17 @@
       <pre data-out="fidelity"></pre>
     </section>
 
+    <section>
+      <h2>11 · A gap longer than the worker's lifetime</h2>
+      <p class="why">
+        Two frames 45s apart. Chrome evicts an idle service worker after ~30s, so the second frame
+        reaches a <em>restarted</em> worker that has to link it back to the stream it already
+        recorded. If it cannot, the stream stops growing at the gap and never recovers.
+      </p>
+      <button data-demo="fetch-long-gap">Run</button>
+      <pre data-out="fetch-long-gap"></pre>
+    </section>
+
     <script type="module">
       const out = (name, text) => {
         const box = document.querySelector(`[data-out="${name}"]`)
@@ -248,6 +259,11 @@
         async 'fetch-plain'() {
           out('fetch-plain', '')
           await drain('fetch-plain', await fetch('/sse?as=text/plain'))
+        },
+
+        async 'fetch-long-gap'() {
+          out('fetch-long-gap', '')
+          await drain('fetch-long-gap', await fetch('/long-gap?gap=45000'))
         },
 
         eventsource() {

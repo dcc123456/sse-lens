@@ -100,7 +100,7 @@ async function findWorker(context: BrowserContext): Promise<Worker | undefined> 
 
 interface State {
   tab: { id: number; url: string } | null
-  streams: { url: string; eventCount: number; state: string }[]
+  streams: { id: string; url: string; eventCount: number; state: string }[]
   unavailableReason?: string
 }
 
@@ -131,6 +131,28 @@ async function panelState(panel: Page): Promise<State> {
 /** Highest event count across all captured streams. */
 const bestEvents = (state: State): number =>
   Math.max(0, ...state.streams.map((stream) => stream.eventCount))
+
+/**
+ * Opens the panel in a new tab and returns it.
+ *
+ * The navigation is retried because a freshly loaded — or freshly *resumed* —
+ * extension can briefly refuse to serve its own pages with `net::ERR_FAILED`.
+ */
+async function openPanelTab(context: BrowserContext, panelUrl: string): Promise<Page> {
+  const panel = await context.newPage()
+  panel.on('pageerror', (error) => console.log(`  (panel error) ${error.message}`))
+
+  let navigated = false
+  for (let attempt = 0; attempt < 5 && !navigated; attempt += 1) {
+    navigated = await panel
+      .goto(panelUrl, { waitUntil: 'domcontentloaded', timeout: 10000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!navigated) await sleep(1000)
+  }
+  check('panel page loaded', navigated, navigated ? '' : panelUrl)
+  return panel
+}
 
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'manifest.json'))) {
@@ -201,27 +223,8 @@ async function main(): Promise<void> {
      * brought back to the front afterwards - a panel that armed itself would be
      * inspecting a chrome-extension page, which is restricted.
      */
-    const panel = await context.newPage()
-    panel.on('pageerror', (error) => console.log(`  (panel error) ${error.message}`))
-
-    /*
-     * Retry the panel navigation.
-     *
-     * A freshly reloaded extension can briefly refuse to serve its own pages with
-     * `net::ERR_FAILED` while Chrome re-registers the worker. That is a harness
-     * race, not a product defect, and letting it abort the run would hide whatever
-     * the run was meant to measure.
-     */
     const panelUrl = `chrome-extension://${extensionId}/${panelPath}`
-    let navigated = false
-    for (let attempt = 0; attempt < 5 && !navigated; attempt += 1) {
-      navigated = await panel
-        .goto(panelUrl, { waitUntil: 'domcontentloaded', timeout: 10000 })
-        .then(() => true)
-        .catch(() => false)
-      if (!navigated) await sleep(1000)
-    }
-    check('panel page loaded', navigated, navigated ? '' : panelUrl)
+    let panel = await openPanelTab(context, panelUrl)
     await sleep(700)
 
     const rendered = await panel.evaluate(
@@ -308,6 +311,71 @@ async function main(): Promise<void> {
       'captures after switching tabs repeatedly',
       bestEvents(state) > 0,
       `best=${bestEvents(state)}`,
+    )
+
+    // --- a stream whose frames straddle a worker eviction ----------------------
+
+    /*
+     * The reported fault: on any stream that pauses longer than Chrome's ~30s
+     * idle lifetime, the worker dies between frames. The restarted worker has the
+     * record back from `storage.session` but must still recognise the id the page
+     * gave that stream, or every later frame is discarded as an orphan and the
+     * stream stops growing for good.
+     *
+     * Closing the panel is what makes the eviction happen: its port is the only
+     * thing holding the worker open, and it also disarms the page — so the stream
+     * is re-armed before its second frame is due, which is the state a user
+     * reaches by reopening the panel mid-answer.
+     */
+    await page.click('[data-demo="fetch-long-gap"]')
+    await sleep(2500)
+    state = await panelState(panel)
+    const beforeGap = state.streams.find((stream) => stream.url.includes('/long-gap'))
+    check(
+      'captures the frame before the gap',
+      (beforeGap?.eventCount ?? 0) >= 1,
+      `events=${beforeGap?.eventCount ?? 0}`,
+    )
+
+    /** A worker destroyed mid-evaluate can hang, so cap how long it is given. */
+    const bounded = <T,>(promise: Promise<T>, ms = 8000): Promise<T | undefined> =>
+      Promise.race([promise, sleep(ms).then(() => undefined)])
+
+    await panel.close()
+    console.log('  waiting out the worker idle timeout (35s)…')
+    await sleep(35000)
+
+    const stillAlive = await bounded(
+      worker.evaluate(() => chrome.runtime.getManifest().name),
+    ).catch(() => undefined)
+    /*
+     * Reported, not asserted: `findWorker` had to call into the worker to identify
+     * it, and a worker with a debugging session attached is exempt from Chrome's
+     * idle timeout. So this run cannot prove eviction happened either way — which
+     * is why the restarted-worker path lives in tests/worker-lifecycle.spec.ts,
+     * where eviction is simulated against the real worker module. What this case
+     * does cover is the long-idle stream end to end.
+     */
+    console.log(
+      `  (info) worker after 35s idle: ${typeof stillAlive === 'string' ? 'still running' : 'gone'}`,
+    )
+
+    /*
+     * Reopen the panel, which wakes the worker and re-arms this tab. The second
+     * frame is due at ~45s, so it arrives after a cold worker has rehydrated.
+     */
+    panel = await openPanelTab(context, panelUrl)
+    await page.bringToFront()
+    await sleep(1500)
+    console.log('  waiting for the frame after the gap…')
+    await sleep(15000)
+
+    state = await panelState(panel)
+    const afterGap = state.streams.find((stream) => stream.url === beforeGap?.url)
+    check(
+      'the same stream keeps capturing after the gap',
+      afterGap !== undefined && afterGap.id === beforeGap?.id && afterGap.eventCount >= 2,
+      `events=${afterGap?.eventCount ?? 0} state=${afterGap?.state ?? 'gone'}`,
     )
 
     // --- other transports ----------------------------------------------------

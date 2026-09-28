@@ -131,6 +131,24 @@ const routes = {
     response.end()
   },
 
+  /**
+   * Two frames with a gap wider than the MV3 worker's ~30s idle lifetime.
+   *
+   * This is the shape a real LLM or agent stream has when it is waiting on a tool
+   * call, and it is the case where a worker restart has to hand the second frame
+   * back to the *same* record it already stored. `?gap=` overrides the wait so an
+   * automated check can keep it to one eviction and no more.
+   */
+  async '/long-gap'(request, response, url) {
+    const gap = Math.max(1_000, Number(url.searchParams.get('gap')) || 45_000)
+    sseHeaders(response)
+    response.write('data: before the gap\n\n')
+    await sleep(gap)
+    if (response.writableEnded) return
+    response.write('data: after the gap\n\n')
+    response.end()
+  },
+
   /** Ends deliberately mid-event, to exercise the tail warning. */
   async '/truncated'(request, response) {
     sseHeaders(response)

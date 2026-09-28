@@ -19,6 +19,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChromeHarness } from './harness'
+import type { StreamRecord } from '../src/lib/types'
+
+/** Longer than the worker's persist debounce, so a test can force a mirror to storage. */
+const PERSIST_WINDOW_MS = 500
 
 /** Loads a fresh copy of the worker against a fresh harness. */
 async function bootWorker(harness: ChromeHarness): Promise<void> {
@@ -299,6 +303,66 @@ describe('worker lifecycle: surviving eviction', () => {
 
     await harness.emitTabActivated(2)
     expect(harness.isArmed(2)).toBe(true)
+  })
+
+  /**
+   * The long-idle-gap case: a stream whose frames are more than ~30s apart lets
+   * the worker be evicted *between* frames of one stream, so the worker restarts
+   * with the record rehydrated but the page-local id mapping gone.
+   */
+  it('keeps capturing a stream whose frames span an eviction', async () => {
+    await bootWorker(harness)
+    await harness.connectPanel()
+    await streamSse(harness, 1, 'slow')
+    // Let the debounced mirror into storage.session happen, as it does in the worker.
+    await harness.settle(PERSIST_WINDOW_MS)
+
+    harness.evict()
+    await bootWorker(harness)
+    await harness.connectPanel()
+    harness.clearRecorded()
+
+    await harness.sendPage(1, {
+      type: 'stream.chunk',
+      localId: 'slow',
+      text: 'data: after-the-gap\n\n',
+    })
+
+    const delivered = harness.toPanel
+      .filter((event) => event.type === 'stream.events')
+      .flatMap((event) => (event as unknown as { events: { data: string }[] }).events)
+      .map((sseEvent) => sseEvent.data)
+
+    expect(delivered, 'a frame after the worker restarted must still be captured').toEqual([
+      'after-the-gap',
+    ])
+    // The resumed frames must continue the record's numbering, not restart at 0.
+    const records = await harness.sendToWorker({ type: 'panel.getState' })
+    const state = (records as { ok: true; state: { streams: StreamRecord[] } }).state
+    const stream = state.streams.find((candidate) => candidate.url.includes('/v1/stream'))
+    expect(stream?.events.map((event) => event.seq)).toEqual([0, 1])
+  })
+
+  it('closes a stream that is still open across an eviction', async () => {
+    await bootWorker(harness)
+    await harness.connectPanel()
+    await streamSse(harness, 1, 'slow-close')
+    await harness.settle(PERSIST_WINDOW_MS)
+
+    harness.evict()
+    await bootWorker(harness)
+    await harness.connectPanel()
+    harness.clearRecorded()
+
+    await harness.sendPage(1, {
+      type: 'stream.close',
+      localId: 'slow-close',
+      endedAt: Date.now(),
+      state: 'closed',
+    })
+
+    const closed = harness.toPanel.filter((event) => event.type === 'stream.closed')
+    expect(closed.length, 'the end of a stream that spans an eviction must be recorded').toBe(1)
   })
 })
 

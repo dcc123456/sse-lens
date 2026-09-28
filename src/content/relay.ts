@@ -22,14 +22,24 @@
  * alternative (a private channel) does not exist across the MAIN/ISOLATED
  * boundary.
  *
+/**
  * ## Lifecycle
  *
  * The relay asks the worker for the arm state as soon as it loads, which covers
- * the case where the panel is already open and the page is merely reloading. An
- * `Extension context invalidated` failure (the extension was reloaded or removed
+ * the case where the panel is already open and the page is merely reloading. That
+ * one announcement is the only traffic a page that has not streamed yet sends:
+ * while the arm state is unknown, the MAIN-world hook buffers messages instead of
+ * forwarding them, so if this request fails, nothing else will reach the worker
+ * until the page reloads. Hence the bounded retry in {@link scheduleResync} —
+ * without it a cold-start race with an evicted worker silently cost the tab all of
+ * its captures.
+ *
+ * An `Extension context invalidated` failure (the extension was reloaded or removed
  * while this page stayed open) is treated as a permanent disarm rather than
  * logged repeatedly: the page is now orphaned and there is nothing to reconnect
- * to until it reloads.
+ * to until it reloads. That is decided by `chrome.runtime.id`, which Chrome blanks
+ * only when the context is genuinely gone — a message-level error alone does not
+ * distinguish "reloaded" from "the worker was still waking up".
  *
  * @module content/relay
  */
@@ -47,6 +57,17 @@ import {
 /** Set once the extension context is gone, to stop pointless retries. */
 let orphaned = false
 
+/**
+ * Backoff for re-announcing after a message the worker never answered.
+ *
+ * Bounded on purpose: if the worker truly cannot be reached, a page must not be
+ * left polling it forever.
+ */
+const RESYNC_BASE_DELAY_MS = 500
+const RESYNC_MAX_ATTEMPTS = 3
+let resyncAttempts = 0
+let resyncTimer: number | null = null
+
 /** Pushes an arm instruction down to the MAIN world. */
 function toPage(message: RelayMessage): void {
   const envelope: PageEnvelope = {
@@ -57,13 +78,31 @@ function toPage(message: RelayMessage): void {
   window.postMessage(envelope, '/')
 }
 
-function isContextGone(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return (
-    message.includes('Extension context invalidated') ||
-    message.includes('Receiving end does not exist') ||
-    message.includes('message port closed')
-  )
+/**
+ * Whether this content script still belongs to a live extension.
+ *
+ * Chrome blanks `runtime.id` when the extension is reloaded, updated or removed,
+ * which is the only authoritative signal available on this side of the boundary.
+ */
+function contextIsLive(): boolean {
+  return Boolean(chrome.runtime?.id)
+}
+
+/**
+ * Re-asks for the arm state after a delivery failure.
+ *
+ * Needed because a page that has not streamed yet sends nothing else: the hook
+ * holds its messages while the arm state is unknown, so a lost {@link RelayHello}
+ * would otherwise leave the tab permanently deaf.
+ */
+function scheduleResync(): void {
+  if (resyncTimer !== null || resyncAttempts >= RESYNC_MAX_ATTEMPTS) return
+  const delay = RESYNC_BASE_DELAY_MS * 2 ** resyncAttempts
+  resyncAttempts += 1
+  resyncTimer = window.setTimeout(() => {
+    resyncTimer = null
+    void toWorker({ type: 'relay.hello' })
+  }, delay)
 }
 
 /**
@@ -78,8 +117,9 @@ async function toWorker(payload: RelayToWorker | RelayHello): Promise<void> {
   try {
     const reply = (await chrome.runtime.sendMessage(payload)) as RelayMessage | undefined
     if (reply && reply.type === 'arm') toPage(reply)
-  } catch (error) {
-    if (isContextGone(error)) {
+    resyncAttempts = 0
+  } catch {
+    if (!contextIsLive()) {
       orphaned = true
       // Tell the page to stop capturing: nothing is listening any more, and the
       // hook would otherwise keep buffering into a void.
@@ -90,9 +130,13 @@ async function toWorker(payload: RelayToWorker | RelayHello): Promise<void> {
         maxBodyChars: 0,
         redactHeaders: [],
       })
+      return
     }
-    // Any other failure (the worker is asleep and waking) is transient; the next
-    // message will carry the state.
+    // Transient — the worker was still starting, or was evicted mid-delivery.
+    // Retry the announcement, since a missed one is not recovered by anything
+    // else on this page. The forwarded payload itself is lost; the next one
+    // carries the state again.
+    scheduleResync()
   }
 }
 

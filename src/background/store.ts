@@ -114,17 +114,30 @@ export class CaptureStore {
   /**
    * Restores persisted state after a worker restart.
    *
-   * Parsers are intentionally *not* restored: a stream that was mid-frame when
-   * the worker died cannot be resumed correctly, and inventing a parser primed
-   * with an empty buffer would mis-frame the continuation. Such a stream keeps
-   * its recorded frames and is left in whatever state it had.
+   * The page-local ids of streams that were still open are re-registered, so a
+   * frame arriving after the restart resolves to its record instead of being
+   * discarded as an orphan. That re-linking is what lets a stream whose frames are
+   * more than ~30s apart — longer than the MV3 idle lifetime — survive eviction.
+   *
+   * Parsers are intentionally *not* restored: a stream that was mid-frame when the
+   * worker died cannot have that partial frame resumed, and inventing a parser
+   * primed with an empty buffer would mis-frame the continuation. Such a stream
+   * keeps every frame already recorded, continues numbering from there, and loses
+   * at most the one frame that was in flight.
    */
   hydrate(tabId: number, streams: StreamRecord[]): void {
     this.byTab.set(tabId, [...streams].reverse())
+    for (const [localId, id] of [...this.localIds.entries()]) {
+      if (id.startsWith(`${tabId}:`)) this.localIds.delete(localId)
+    }
     for (const stream of streams) {
       // Keep the counter ahead of anything restored, so new ids cannot collide.
       const suffix = Number(stream.id.split(':').pop())
       if (Number.isFinite(suffix) && suffix >= this.counter) this.counter = suffix + 1
+      // A closed record will never be named again, so only open ones re-link.
+      if (stream.state === 'open' && stream.localId !== undefined) {
+        this.localIds.set(this.localKey(stream.tabId, stream.frameId, stream.localId), stream.id)
+      }
     }
   }
 
@@ -179,6 +192,7 @@ export class CaptureStore {
     const id = `${input.tabId}:${input.frameId}:${this.counter++}`
     const record: StreamRecord = {
       id,
+      localId: input.localId,
       tabId: input.tabId,
       frameId: input.frameId,
       frameUrl: input.frameUrl,
@@ -245,7 +259,14 @@ export class CaptureStore {
     let state = this.parsers.get(record.id)
     if (!state) {
       const format = looksLikeNdjson(text) ? 'ndjson' : 'sse'
-      const options = { maxEventBytes: this.settings.maxEventBytes, now: this.now }
+      const options = {
+        maxEventBytes: this.settings.maxEventBytes,
+        now: this.now,
+        // Non-zero only for a record this worker did not open, which means its
+        // parser died with the previous worker: continue the frame numbering so
+        // the resumed frames do not collide with the recorded ones.
+        startSeq: record.eventCount,
+      }
       state = {
         format,
         parser: format === 'ndjson' ? new NdjsonParser(options) : new SseParser(options),
